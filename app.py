@@ -301,26 +301,6 @@ def load_corpus_index() -> list[dict]:
     return corpus
 
 
-def debug_doc_italic(doc_id: str):
-    _, docs_svc, _ = get_services()
-    doc = docs_svc.documents().get(documentId=doc_id).execute()
-    lines = []
-    for elem in doc.get('body', {}).get('content', [])[:40]:
-        para = elem.get('paragraph')
-        if not para:
-            continue
-        named_style = para.get('paragraphStyle', {}).get('namedStyleType', '')
-        for pe in para.get('elements', []):
-            tr = pe.get('textRun')
-            if not tr:
-                continue
-            text   = tr.get('content', '').strip()[:50]
-            italic = tr.get('textStyle', {}).get('italic')
-            if text:
-                lines.append(f"italic={str(italic):6} | style={named_style:25} | {text!r}")
-    st.code('\n'.join(lines), language=None)
-
-
 @st.cache_data(ttl=3600, show_spinner=False)
 def get_doc_content(doc_id: str) -> dict:
     """
@@ -545,11 +525,6 @@ with st.spinner("Loading corpus index from Google Sheets…"):
     except Exception as e:
         st.error(f"Could not load corpus index: {e}")
         corpus = []
-
-# ── Debug: show italic flags for first doc ───────────────────────────────────
-if corpus:
-    with st.expander("🔬 Debug: italic flags in first document", expanded=False):
-        debug_doc_italic(corpus[0]['doc_id'])
 
 # ── Results ───────────────────────────────────────────────────────────────────
 if search_clicked and pattern_input.strip() and corpus:
