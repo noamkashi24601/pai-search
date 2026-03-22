@@ -299,7 +299,24 @@ def load_corpus_index() -> list[dict]:
         })
 
     return corpus
-
+@st.cache_data(ttl=3600, show_spinner=False)
+def debug_doc_italic(doc_id: str):
+    _, docs_svc, _ = get_services()
+    doc = docs_svc.documents().get(documentId=doc_id).execute()
+    for elem in doc.get('body', {}).get('content', [])[:30]:
+        para = elem.get('paragraph')
+        if not para:
+            continue
+        named_style = para.get('paragraphStyle', {}).get('namedStyleType', '')
+        for pe in para.get('elements', []):
+            tr = pe.get('textRun')
+            if not tr:
+                continue
+              
+            text   = tr.get('content', '').strip()[:40]
+            italic = tr.get('textStyle', {}).get('italic')
+            if text:
+                print(f"italic={italic!r:6} | named_style={named_style:20} | {text!r}")
 
 @st.cache_data(ttl=3600, show_spinner=False)
 def get_doc_content(doc_id: str) -> dict:
