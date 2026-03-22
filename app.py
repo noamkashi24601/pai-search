@@ -228,9 +228,7 @@ COL_GENDER     = 8    # מגדר דובר
 
 @st.cache_resource
 def get_services():
-    import base64
-    b64 = st.secrets["GOOGLE_SERVICE_ACCOUNT_B64"]
-    creds_dict = json.loads(base64.b64decode(b64).decode())
+    creds_dict = json.loads(st.secrets["GOOGLE_SERVICE_ACCOUNT"])
     creds = service_account.Credentials.from_service_account_info(
         creds_dict,
         scopes=[
@@ -299,11 +297,13 @@ def load_corpus_index() -> list[dict]:
         })
 
     return corpus
-@st.cache_data(ttl=3600, show_spinner=False)
+
+
 def debug_doc_italic(doc_id: str):
     _, docs_svc, _ = get_services()
     doc = docs_svc.documents().get(documentId=doc_id).execute()
-    for elem in doc.get('body', {}).get('content', [])[:30]:
+    lines = []
+    for elem in doc.get('body', {}).get('content', [])[:40]:
         para = elem.get('paragraph')
         if not para:
             continue
@@ -312,11 +312,12 @@ def debug_doc_italic(doc_id: str):
             tr = pe.get('textRun')
             if not tr:
                 continue
-              
-            text   = tr.get('content', '').strip()[:40]
+            text   = tr.get('content', '').strip()[:50]
             italic = tr.get('textStyle', {}).get('italic')
             if text:
-                print(f"italic={italic!r:6} | named_style={named_style:20} | {text!r}")
+                lines.append(f"italic={str(italic):6} | style={named_style:25} | {text!r}")
+    st.code('\n'.join(lines), language=None)
+
 
 @st.cache_data(ttl=3600, show_spinner=False)
 def get_doc_content(doc_id: str) -> dict:
@@ -534,9 +535,6 @@ with mid:
             st.cache_data.clear()
             st.rerun()
 
-if corpus:
-    debug_doc_italic(corpus[0]['doc_id'])
-  
 # ── Load corpus index once ────────────────────────────────────────────────────
 with st.spinner("Loading corpus index from Google Sheets…"):
     try:
@@ -545,6 +543,11 @@ with st.spinner("Loading corpus index from Google Sheets…"):
     except Exception as e:
         st.error(f"Could not load corpus index: {e}")
         corpus = []
+
+# ── Debug: show italic flags for first doc ───────────────────────────────────
+if corpus:
+    with st.expander("🔬 Debug: italic flags in first document", expanded=False):
+        debug_doc_italic(corpus[0]['doc_id'])
 
 # ── Results ───────────────────────────────────────────────────────────────────
 if search_clicked and pattern_input.strip() and corpus:
