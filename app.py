@@ -534,6 +534,9 @@ with mid:
             st.cache_data.clear()
             st.rerun()
 
+if corpus:
+    debug_doc_italic(corpus[0]['doc_id'])
+  
 # ── Load corpus index once ────────────────────────────────────────────────────
 with st.spinner("Loading corpus index from Google Sheets…"):
     try:
