@@ -228,7 +228,9 @@ COL_GENDER     = 8    # מגדר דובר
 
 @st.cache_resource
 def get_services():
-    creds_dict = json.loads(st.secrets["GOOGLE_SERVICE_ACCOUNT"])
+    import base64
+    b64 = st.secrets["GOOGLE_SERVICE_ACCOUNT_B64"]
+    creds_dict = json.loads(base64.b64decode(b64).decode())
     creds = service_account.Credentials.from_service_account_info(
         creds_dict,
         scopes=[
