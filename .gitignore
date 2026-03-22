@@ -1,2 +1,3 @@
 *.json
 pai-search-fdde3e0a5fa7.json
+.streamlit/secrets.toml
