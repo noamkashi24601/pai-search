@@ -5,12 +5,15 @@
 # ═══════════════════════════════════════════════════════════════════════════════
 
 import streamlit as st
+import streamlit.components.v1 as components
 import re
+import io
 import unicodedata
 import json
 from google.oauth2 import service_account
 from googleapiclient.discovery import build
 from googleapiclient.errors import HttpError
+from googleapiclient.http import MediaIoBaseDownload
 
 st.set_page_config(page_title="PAI Corpus Search", layout="wide", page_icon="◌")
 
@@ -216,6 +219,27 @@ def highlight_in_text(text: str, rx: re.Pattern) -> str:
     return rx.sub(lambda m: f'<mark>{m.group()}</mark>', text)
 
 
+_MARK_STYLE = (
+    'background:#b6f2c8;border-radius:3px;padding:0 2px;'
+    'font-weight:700;color:#0d4a22'
+)
+
+def highlight_in_exported_html(html_doc: str, rx: re.Pattern) -> str:
+    """Apply highlighting to text nodes only (skipping HTML tags) in a full HTML document."""
+    # Split on HTML tags so we never modify tag internals
+    parts  = re.split(r'(<[^>]+>)', html_doc)
+    result = []
+    for part in parts:
+        if part.startswith('<'):
+            result.append(part)   # tag — leave untouched
+        else:
+            result.append(rx.sub(
+                lambda m: f'<mark style="{_MARK_STYLE}">{m.group()}</mark>',
+                part
+            ))
+    return ''.join(result)
+
+
 # ════════════════════════════════════════════════════════════════════════════════
 #  GOOGLE SERVICES
 # ════════════════════════════════════════════════════════════════════════════════
@@ -306,90 +330,61 @@ def load_corpus_index() -> list[dict]:
 @st.cache_data(ttl=3600, show_spinner=False)
 def get_doc_content(doc_id: str) -> dict:
     """
-    Fetches a Google Doc and splits content into:
-      - italic_text:  only italic runs (the transcription body) — used for search
-      - display_html: full document rendered as HTML for the viewer
-                      (header greyed out, body searchable)
+    Fetches a Google Doc and returns:
+      - italic_text:  only italic runs after *** (the transcription body) — used for search
+      - display_html: full Google Docs HTML export — displayed as-is for exact visual match
+      - body:         all post-separator text (fallback)
     """
     try:
-        _, docs_svc, _ = get_services()
+        drive_svc, docs_svc, _ = get_services()
+
+        # ── 1. Docs API: extract italic_text for search ──────────────────────
         doc = docs_svc.documents().get(documentId=doc_id).execute()
+
+        paragraphs_italic = []
+        for elem in doc.get('body', {}).get('content', []):
+            para = elem.get('paragraph')
+            if not para:
+                continue
+            runs = []
+            for pe in para.get('elements', []):
+                tr = pe.get('textRun')
+                if not tr:
+                    continue
+                text   = unicodedata.normalize('NFC', tr.get('content', ''))
+                italic = tr.get('textStyle', {}).get('italic', False)
+                runs.append((text, italic))
+
+            full_para_text = ''.join(t for t, _ in runs)
+            italic_chars   = sum(len(t) for t, i in runs if i)
+            total_chars    = sum(len(t) for t, _ in runs)
+            is_italic      = (total_chars > 0) and (italic_chars / total_chars > 0.5)
+            paragraphs_italic.append((full_para_text, is_italic))
+
+        sep_idx = next(
+            (i for i, (txt, _) in enumerate(paragraphs_italic) if txt.strip() == '***'),
+            None
+        )
+        body_paras  = paragraphs_italic[sep_idx + 1:] if sep_idx is not None else paragraphs_italic
+        italic_text = '\n'.join(txt for txt, is_italic in body_paras if is_italic)
+        body_text   = '\n'.join(txt for txt, _ in body_paras)
+
+        # ── 2. Drive API: export full HTML for pixel-perfect display ─────────
+        export_req = drive_svc.files().export_media(fileId=doc_id, mimeType='text/html')
+        buf = io.BytesIO()
+        dl  = MediaIoBaseDownload(buf, export_req)
+        done = False
+        while not done:
+            _, done = dl.next_chunk()
+        display_html = buf.getvalue().decode('utf-8')
+
     except Exception:
         return {'italic_text': '', 'display_html': '', 'body': ''}
 
-    # ── Extract paragraph by paragraph, preserving italic info ──────────────
-    paragraphs_italic = []   # (text, is_italic_dominant)
-    body_content = doc.get('body', {}).get('content', [])
-
-    for elem in body_content:
-        para = elem.get('paragraph')
-        if not para:
-            continue
-
-        runs = []
-        for pe in para.get('elements', []):
-            tr = pe.get('textRun')
-            if not tr:
-                continue
-            text    = unicodedata.normalize('NFC', tr.get('content', ''))
-            italic  = tr.get('textStyle', {}).get('italic', False)
-            runs.append((text, italic))
-
-        full_para_text = ''.join(t for t, _ in runs)
-        # A paragraph counts as "italic" if the majority of non-whitespace chars are italic
-        italic_chars = sum(len(t) for t, i in runs if i)
-        total_chars  = sum(len(t) for t, _ in runs)
-        is_italic    = (total_chars > 0) and (italic_chars / total_chars > 0.5)
-
-        paragraphs_italic.append((full_para_text, is_italic, runs))
-
-    # ── Split at *** separator ───────────────────────────────────────────────
-    sep_idx = next(
-        (i for i, (txt, _, __) in enumerate(paragraphs_italic) if txt.strip() == '***'),
-        None
-    )
-
-    header_paras = paragraphs_italic[:sep_idx + 1] if sep_idx is not None else []
-    body_paras   = paragraphs_italic[sep_idx + 1:] if sep_idx is not None else paragraphs_italic
-
-    # ── italic_text: only italic body paragraphs, for search ────────────────
-    italic_text = '\n'.join(
-        txt for txt, is_italic, _ in body_paras if is_italic
-    )
-
-    # ── display_html: full doc rendered with proper formatting ───────────────
-    header_parts = []
-    for txt, _, __ in header_paras:
-        stripped = txt.strip()
-        if stripped and stripped != '***':
-            header_parts.append(f'<p>{stripped}</p>')
-    header_html = '<div class="doc-header-section">' + ''.join(header_parts) + '</div>'
-
-    body_lines = []
-    for txt, is_italic, runs in body_paras:
-        stripped_txt = txt.strip()
-        if not stripped_txt:
-            body_lines.append('<p></p>')
-            continue
-        if is_italic:
-            # Render each run: italic runs get the .italic-run class (styled italic in CSS)
-            line = ''
-            for run_txt, run_italic in runs:
-                if run_italic:
-                    line += f'<span class="italic-run">{run_txt}</span>'
-                else:
-                    line += run_txt
-            body_lines.append(f'<p>{line}</p>')
-        else:
-            # Non-italic paragraphs (section headers like FEATURES, VERB, etc.)
-            body_lines.append(f'<p class="body-label">{stripped_txt}</p>')
-
-    body_html = ''.join(body_lines)
-
     return {
         'italic_text':  italic_text,
-        'display_html': header_html + '\n' + body_html,
-        'body':         '\n'.join(txt for txt, _, __ in body_paras),
+        'display_html': display_html,
+        'body':         body_text,
     }
 
 
@@ -439,15 +434,8 @@ def run_search(
                 matched_words.append(highlight_word(word, hits))
 
         if match_count > 0:
-            # Re-highlight in the display HTML (apply to italic spans only)
-            display_html = content['display_html']
-            # Highlight within italic-run spans only
-            display_html = re.sub(
-                r'(<span class="italic-run">)(.*?)(</span>)',
-                lambda m: m.group(1) + highlight_in_text(m.group(2), rx) + m.group(3),
-                display_html,
-                flags=re.DOTALL
-            )
+            # Highlight matches in the exported Google Docs HTML (all text nodes)
+            display_html = highlight_in_exported_html(content['display_html'], rx)
 
             results.append({
                 'name':          doc['name'],
@@ -573,10 +561,7 @@ if search_clicked and pattern_input.strip() and corpus:
                 <div class="word-chips">{chips}{more}</div>
                 """, unsafe_allow_html=True)
 
-                st.markdown(
-                    f'<div class="full-doc">{r["display_html"]}</div>',
-                    unsafe_allow_html=True
-                )
+                components.html(r['display_html'], height=550, scrolling=True)
 
 elif search_clicked and not pattern_input.strip():
     st.warning("Please enter a pattern before searching.")
