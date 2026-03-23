@@ -225,18 +225,41 @@ _MARK_STYLE = (
     'font-weight:700;color:#0d4a22'
 )
 
+_TURN_MARKER_HL = re.compile(r'^[-.][ \t\u00a0]')
+
+def _is_transcription_para(para_html: str) -> bool:
+    """Same structural test used by extract_transcription_text."""
+    text = html_lib.unescape(re.sub(r'<[^>]+>', '', para_html)).strip()
+    if not re.search(r'[^\x00-\x7F]', text):
+        return False
+    return bool(_TURN_MARKER_HL.match(text) or text[:1].isdigit())
+
+def _highlight_text_nodes(fragment: str, rx: re.Pattern) -> str:
+    """Highlight regex matches inside text nodes only (not inside HTML tags)."""
+    parts = re.split(r'(<[^>]+>)', fragment)
+    return ''.join(
+        part if part.startswith('<')
+        else rx.sub(lambda m: f'<mark style="{_MARK_STYLE}">{m.group()}</mark>', part)
+        for part in parts
+    )
+
 def highlight_in_exported_html(html_doc: str, rx: re.Pattern) -> str:
-    """Apply highlighting to text nodes only (skipping HTML tags) in a full HTML document."""
-    parts  = re.split(r'(<[^>]+>)', html_doc)
-    result = []
-    for part in parts:
-        if part.startswith('<'):
-            result.append(part)
+    """
+    Apply highlighting only inside transcription paragraphs (those that start
+    with a digit or turn marker and contain PAI characters).  Speaker bios,
+    the FEATURES section, and the metadata header are left untouched.
+    """
+    result   = []
+    last_end = 0
+    for m in re.finditer(r'(<p\b[^>]*>)(.*?)(</p>)', html_doc, re.DOTALL | re.IGNORECASE):
+        result.append(html_doc[last_end:m.start()])
+        open_tag, body, close_tag = m.group(1), m.group(2), m.group(3)
+        if _is_transcription_para(body):
+            result.append(open_tag + _highlight_text_nodes(body, rx) + close_tag)
         else:
-            result.append(rx.sub(
-                lambda m: f'<mark style="{_MARK_STYLE}">{m.group()}</mark>',
-                part
-            ))
+            result.append(m.group(0))
+        last_end = m.end()
+    result.append(html_doc[last_end:])
     return ''.join(result)
 
 
