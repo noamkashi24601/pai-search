@@ -241,42 +241,70 @@ def highlight_in_exported_html(html_doc: str, rx: re.Pattern) -> str:
 
 def extract_transcription_text(html_doc: str) -> str:
     """
-    Extract the transcription search index from a Google Docs HTML export.
+    Extract the transcription-body search index from a Google Docs HTML export.
 
-    Strategy (two filters combined):
-      1. Only paragraphs AFTER the *** separator  →  skips the header block
-      2. Only paragraphs that contain at least one non-ASCII character
-         (i.e. a PAI transliteration character such as ā ō ū ī ē ḥ ẓ ḍ ṭ ṣ
-          ġ ǧ š ʿ ʾ ɑ̄ ə)  →  skips structural ASCII-only lines like
-         "FEATURES", "VERB PARADIGM", "PERFECT", "1sg:", "Active Participle:",
-         "***", numbered headings, etc.
+    Four filters applied in combination — derived from inspecting the actual
+    corpus document structure:
 
-    Every transcription sentence in the corpus is in Palestinian Arabic
-    transliteration and therefore always contains PAI special characters.
-    Plain-English structural lines never do.
-
-    This is simpler and more reliable than parsing CSS italic classes,
-    and has negligible performance cost (one regex per paragraph text).
+      1. After *** separator          → skips the metadata header block
+      2. CSS italic ≥ 80 % of chars  → skips MIXED FEATURES lines like
+                                        "Narrative Imperative  w-idʿas w-kīm…"
+                                        (label is plain, example is italic → ~73 %)
+      3. ≥1 non-ASCII (PAI) char     → skips ASCII structure lines:
+                                        FEATURES, VERB, PRONS, 1sg:, PERFECT …
+      4. length ≥ 50  OR  starts
+         with a turn/continuation
+         marker ("- " / ". ")        → skips short all-italic FEATURES examples
+                                        (max 42 chars in corpus) while keeping
+                                        short transcription dialogue turns like
+                                        "-       ʿimil ṭōše Mhammad" (28 chars)
     """
-    # ── 1. Extract all <p> paragraphs ────────────────────────────────────────
+    # ── Parse italic CSS classes from Google Docs <style> block ──────────────
+    italic_classes: set = set()
+    style_m = re.search(r'<style[^>]*>(.*?)</style>', html_doc, re.DOTALL | re.IGNORECASE)
+    if style_m:
+        for rule_m in re.finditer(r'\.([\w-]+)\s*\{([^}]+)\}', style_m.group(1)):
+            if re.search(r'font-style\s*:\s*italic', rule_m.group(2), re.IGNORECASE):
+                italic_classes.add(rule_m.group(1))
+
+    def _italic_ratio(para_html: str) -> float:
+        total = italic = 0
+        for attrs, content in re.findall(r'<span\b([^>]*)>(.*?)</span>', para_html, re.DOTALL):
+            t = len(re.sub(r'<[^>]+>', '', content))
+            total += t
+            s = re.search(r'style="([^"]*)"', attrs)
+            c = re.search(r'class="([^"]*)"', attrs)
+            if (s and re.search(r'font-style\s*:\s*italic', s.group(1), re.IGNORECASE)) \
+               or (c and set(c.group(1).split()) & italic_classes):
+                italic += t
+        return italic / total if total > 0 else 0.0
+
+    # ── Extract all paragraphs ────────────────────────────────────────────────
+    # Note: we do NOT rely on a *** separator — corpus documents don't always
+    # have one. The three other filters are sufficient to exclude header /
+    # FEATURES content without needing a positional anchor.
     paragraphs = re.findall(r'<p\b[^>]*>(.*?)</p>', html_doc, re.DOTALL | re.IGNORECASE)
 
-    # ── 2. Find *** separator ─────────────────────────────────────────────────
-    sep_idx = None
-    for i, para in enumerate(paragraphs):
-        bare = re.sub(r'[\s\u00a0]+', '', re.sub(r'<[^>]+>', '', para))
-        if bare == '***':
-            sep_idx = i
-            break
+    # Dialogue / continuation markers: "- text" or ". text"
+    TURN_MARKER = re.compile(r'^[-.][ \t\u00a0]')
 
-    body_paras = paragraphs[sep_idx + 1:] if sep_idx is not None else paragraphs
-
-    # ── 3. Keep only paragraphs with at least one non-ASCII (PAI) character ──
     lines = []
-    for para in body_paras:
+    for para in paragraphs:
         text = unicodedata.normalize('NFC', re.sub(r'<[^>]+>', '', para)).strip()
-        if text and re.search(r'[^\x00-\x7F]', text):
-            lines.append(text)
+
+        # Filter 3: must have at least one PAI / non-ASCII character
+        if not re.search(r'[^\x00-\x7F]', text):
+            continue
+
+        # Filter 2: must be ≥80 % italic (skip MIXED FEATURES lines)
+        if italic_classes and _italic_ratio(para) < 0.8:
+            continue
+
+        # Filter 4: skip short paragraphs that aren't transcription markers
+        if len(text) < 50 and not TURN_MARKER.match(text) and not text[:1].isdigit():
+            continue
+
+        lines.append(text)
 
     return '\n'.join(lines)
 
