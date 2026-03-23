@@ -414,13 +414,13 @@ def run_search(
 
     for i, doc in enumerate(corpus):
         bar.progress((i + 1) / max(len(corpus), 1), text=f"Searching · {doc['name']}")
-        content     = get_doc_content(doc['doc_id'])
-        italic_text = content['italic_text']
+        content      = get_doc_content(doc['doc_id'])
+        search_text  = content['body']
 
         match_count   = 0
         matched_words = []
 
-        for word in tokenize(italic_text):
+        for word in tokenize(search_text):
             hits = match_word(word, rx, position)
             if hits:
                 match_count += len(hits)
@@ -443,7 +443,7 @@ def run_search(
                 'community':     doc['community'],
                 'gender':        doc['gender'],
                 'match_count':   match_count,
-                'word_count':    len(tokenize(italic_text)),
+                'word_count':    len(tokenize(search_text)),
                 'matched_words': matched_words[:15],
                 'display_html':  display_html,
             })
@@ -541,7 +541,6 @@ if search_clicked and pattern_input.strip() and corpus:
           <span>🔍 <b>{pattern_input.strip()}</b></span>
           <span>📄 {len(results)} document{'s' if len(results) != 1 else ''}</span>
           <span>◌ {total} total match{'es' if total != 1 else ''}</span>
-          <span style="color:#8899aa;font-size:0.78rem">italic text only</span>
         </div>
         """, unsafe_allow_html=True)
 
