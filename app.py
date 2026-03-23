@@ -244,21 +244,21 @@ def extract_transcription_text(html_doc: str) -> str:
     """
     Extract the transcription-body search index from a Google Docs HTML export.
 
-    Four filters applied in combination — derived from inspecting the actual
-    corpus document structure:
+    Filters applied — derived from the structural rules of the PAI corpus:
 
-      1. After *** separator          → skips the metadata header block
-      2. CSS italic ≥ 80 % of chars  → skips MIXED FEATURES lines like
-                                        "Narrative Imperative  w-idʿas w-kīm…"
-                                        (label is plain, example is italic → ~73 %)
-      3. ≥1 non-ASCII (PAI) char     → skips ASCII structure lines:
-                                        FEATURES, VERB, PRONS, 1sg:, PERFECT …
-      4. length ≥ 50  OR  starts
-         with a turn/continuation
-         marker ("- " / ". ")        → skips short all-italic FEATURES examples
-                                        (max 42 chars in corpus) while keeping
-                                        short transcription dialogue turns like
-                                        "-       ʿimil ṭōše Mhammad" (28 chars)
+      1. ≥1 non-ASCII (PAI) char       → skips plain-ASCII lines like
+                                          FEATURES, VERB, PRONS, 1sg:, PERFECT …
+      2. Starts with a digit OR a
+         turn/continuation marker
+         ("- " / ". ")                 → the ONLY reliable structural rule:
+                                          every transcription turn is numbered
+                                          ("1. rāħet …") or begins with a marker
+                                          ("- w-šāfet …" / ". ʾana …").
+                                          FEATURES examples and speaker bios
+                                          NEVER start this way → no false matches.
+      3. CSS italic ≥ 80 % of chars    → extra guard (only applied when Google
+                                          Docs exports italic classes); falls back
+                                          to rules 1+2 alone if it kills all lines.
     """
     # ── Parse italic CSS classes from Google Docs <style> block ──────────────
     italic_classes: set = set()
@@ -280,24 +280,24 @@ def extract_transcription_text(html_doc: str) -> str:
                 italic += t
         return italic / total if total > 0 else 0.0
 
-    # ── Extract all paragraphs ────────────────────────────────────────────────
-    # Note: we do NOT rely on a *** separator — corpus documents don't always
-    # have one. The three other filters are sufficient to exclude header /
-    # FEATURES content without needing a positional anchor.
     paragraphs = re.findall(r'<p\b[^>]*>(.*?)</p>', html_doc, re.DOTALL | re.IGNORECASE)
 
-    # Dialogue / continuation markers: "- text" or ". text"
+    # Continuation / turn markers: "- text" or ". text"
     TURN_MARKER = re.compile(r'^[-.][ \t\u00a0]')
 
     def _passes_base_filters(para_html: str, text: str) -> bool:
-        """Non-ASCII + length/marker filters — always reliable."""
+        """
+        Structural filter: keeps only PAI transcription turns.
+        Every such turn starts with a digit (numbered) or a turn marker (- / .).
+        FEATURES examples, speaker bios, and header lines never start this way.
+        """
         if not re.search(r'[^\x00-\x7F]', text):
             return False
-        if len(text) < 50 and not TURN_MARKER.match(text) and not text[:1].isdigit():
+        if not (TURN_MARKER.match(text) or text[:1].isdigit()):
             return False
         return True
 
-    # First pass: all three filters (including CSS italic if classes were found)
+    # First pass: structural filter + CSS italic guard (if italic classes found)
     lines = []
     for para in paragraphs:
         text = html_lib.unescape(unicodedata.normalize('NFC', re.sub(r'<[^>]+>', '', para))).strip()
@@ -307,9 +307,7 @@ def extract_transcription_text(html_doc: str) -> str:
             continue
         lines.append(text)
 
-    # Safety fallback: if the CSS italic filter killed everything (can happen when
-    # Google Docs HTML uses a different class structure than expected), retry with
-    # only the non-ASCII + length filters, which are always reliable.
+    # Safety fallback: drop CSS italic requirement if it killed all results
     if not lines:
         for para in paragraphs:
             text = html_lib.unescape(unicodedata.normalize('NFC', re.sub(r'<[^>]+>', '', para))).strip()
