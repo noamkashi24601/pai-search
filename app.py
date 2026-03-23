@@ -580,16 +580,39 @@ with st.expander("🔬 Debug: inspect extracted text for a document"):
         hits = [d for d in corpus if debug_name.lower() in d['name'].lower()] if debug_name else [corpus[0]]
         if hits:
             d = hits[0]
-            st.write(f"Testing: **{d['name']}**")
-            content = get_doc_content(d['doc_id'])
-            it = content.get('italic_text', '')
-            dh = content.get('display_html', '')
-            st.write(f"- HTML export length: **{len(dh)}** chars")
-            st.write(f"- Extracted italic_text: **{len(it)}** chars")
-            if it:
-                st.text_area("First 600 chars of italic_text", it[:600], height=200)
-            else:
-                st.error("italic_text is EMPTY — extraction failed")
+            st.write(f"Testing: **{d['name']}** (`{d['doc_id']}`)")
+            # Force fresh fetch by clearing only this doc's cache entry
+            get_doc_content.clear()
+            try:
+                drive_svc, _, _ = get_services()
+                export_req = drive_svc.files().export_media(
+                    fileId=d['doc_id'], mimeType='text/html')
+                buf = io.BytesIO()
+                dl = MediaIoBaseDownload(buf, export_req)
+                done = False
+                while not done:
+                    _, done = dl.next_chunk()
+                dh = buf.getvalue().decode('utf-8')
+                st.write(f"✅ HTML export: **{len(dh):,}** chars")
+                paras = re.findall(r'<p\b[^>]*>(.*?)</p>', dh, re.DOTALL | re.IGNORECASE)
+                st.write(f"✅ Paragraphs found: **{len(paras)}**")
+                non_ascii_paras = [re.sub(r'<[^>]+>', '', p).strip()
+                                   for p in paras
+                                   if re.search(r'[^\x00-\x7F]',
+                                                re.sub(r'<[^>]+>', '', p))]
+                st.write(f"✅ Paragraphs with PAI chars: **{len(non_ascii_paras)}**")
+                long_paras = [t for t in non_ascii_paras if len(t) >= 50]
+                st.write(f"✅ Of those, length ≥ 50 chars: **{len(long_paras)}**")
+                it = extract_transcription_text(dh)
+                st.write(f"✅ Final italic_text: **{len(it)}** chars")
+                if it:
+                    st.text_area("First 600 chars", it[:600], height=200)
+                else:
+                    st.error("Still empty after extraction — showing first 3 non-ASCII paragraphs:")
+                    for t in non_ascii_paras[:3]:
+                        st.code(t[:200])
+            except Exception as ex:
+                st.error(f"Drive API export FAILED: {ex}")
 
 # ── Results ───────────────────────────────────────────────────────────────────
 if search_clicked and pattern_input.strip() and corpus:
