@@ -8,6 +8,7 @@ import streamlit as st
 import streamlit.components.v1 as components
 import re
 import io
+import html as html_lib
 import unicodedata
 import json
 from google.oauth2 import service_account
@@ -299,7 +300,7 @@ def extract_transcription_text(html_doc: str) -> str:
     # First pass: all three filters (including CSS italic if classes were found)
     lines = []
     for para in paragraphs:
-        text = unicodedata.normalize('NFC', re.sub(r'<[^>]+>', '', para)).strip()
+        text = html_lib.unescape(unicodedata.normalize('NFC', re.sub(r'<[^>]+>', '', para))).strip()
         if not _passes_base_filters(para, text):
             continue
         if italic_classes and _italic_ratio(para) < 0.8:
@@ -311,7 +312,7 @@ def extract_transcription_text(html_doc: str) -> str:
     # only the non-ASCII + length filters, which are always reliable.
     if not lines:
         for para in paragraphs:
-            text = unicodedata.normalize('NFC', re.sub(r'<[^>]+>', '', para)).strip()
+            text = html_lib.unescape(unicodedata.normalize('NFC', re.sub(r'<[^>]+>', '', para))).strip()
             if _passes_base_filters(para, text):
                 lines.append(text)
 
@@ -596,10 +597,10 @@ with st.expander("🔬 Debug: inspect extracted text for a document"):
                 st.write(f"✅ HTML export: **{len(dh):,}** chars")
                 paras = re.findall(r'<p\b[^>]*>(.*?)</p>', dh, re.DOTALL | re.IGNORECASE)
                 st.write(f"✅ Paragraphs found: **{len(paras)}**")
-                non_ascii_paras = [re.sub(r'<[^>]+>', '', p).strip()
+                non_ascii_paras = [html_lib.unescape(re.sub(r'<[^>]+>', '', p)).strip()
                                    for p in paras
                                    if re.search(r'[^\x00-\x7F]',
-                                                re.sub(r'<[^>]+>', '', p))]
+                                                html_lib.unescape(re.sub(r'<[^>]+>', '', p)))]
                 st.write(f"✅ Paragraphs with PAI chars: **{len(non_ascii_paras)}**")
                 long_paras = [t for t in non_ascii_paras if len(t) >= 50]
                 st.write(f"✅ Of those, length ≥ 50 chars: **{len(long_paras)}**")
