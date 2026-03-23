@@ -288,23 +288,32 @@ def extract_transcription_text(html_doc: str) -> str:
     # Dialogue / continuation markers: "- text" or ". text"
     TURN_MARKER = re.compile(r'^[-.][ \t\u00a0]')
 
+    def _passes_base_filters(para_html: str, text: str) -> bool:
+        """Non-ASCII + length/marker filters — always reliable."""
+        if not re.search(r'[^\x00-\x7F]', text):
+            return False
+        if len(text) < 50 and not TURN_MARKER.match(text) and not text[:1].isdigit():
+            return False
+        return True
+
+    # First pass: all three filters (including CSS italic if classes were found)
     lines = []
     for para in paragraphs:
         text = unicodedata.normalize('NFC', re.sub(r'<[^>]+>', '', para)).strip()
-
-        # Filter 3: must have at least one PAI / non-ASCII character
-        if not re.search(r'[^\x00-\x7F]', text):
+        if not _passes_base_filters(para, text):
             continue
-
-        # Filter 2: must be ≥80 % italic (skip MIXED FEATURES lines)
         if italic_classes and _italic_ratio(para) < 0.8:
             continue
-
-        # Filter 4: skip short paragraphs that aren't transcription markers
-        if len(text) < 50 and not TURN_MARKER.match(text) and not text[:1].isdigit():
-            continue
-
         lines.append(text)
+
+    # Safety fallback: if the CSS italic filter killed everything (can happen when
+    # Google Docs HTML uses a different class structure than expected), retry with
+    # only the non-ASCII + length filters, which are always reliable.
+    if not lines:
+        for para in paragraphs:
+            text = unicodedata.normalize('NFC', re.sub(r'<[^>]+>', '', para)).strip()
+            if _passes_base_filters(para, text):
+                lines.append(text)
 
     return '\n'.join(lines)
 
