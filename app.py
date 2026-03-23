@@ -132,15 +132,19 @@ div[data-testid="stExpander"].result-expander > details > summary svg {
 .full-doc {
   background: white; border: 1px solid var(--sky-200); border-radius: 12px;
   padding: 1.6rem 2rem; margin-top: 0.5rem;
-  font-family: 'Source Serif 4', serif; font-size: 0.97rem; line-height: 2; color: var(--ink);
+  font-family: 'Source Serif 4', serif; font-size: 0.97rem; line-height: 1.9; color: var(--ink);
   box-shadow: 0 2px 10px rgba(32,117,199,0.07);
-  max-height: 65vh; overflow-y: auto; white-space: pre-wrap; word-break: break-word;
+  max-height: 65vh; overflow-y: auto; word-break: break-word;
 }
+.full-doc p { margin: 0.35rem 0; }
 .full-doc mark { background: #b6f2c8; border-radius: 3px; padding: 0 2px; font-weight: 700; color: #0d4a22; }
 .full-doc .doc-header-section {
-  color: #8899aa; font-style: italic; font-size: 0.88rem;
+  color: #8899aa; font-size: 0.88rem;
   border-bottom: 1px solid var(--sky-100); margin-bottom: 1rem; padding-bottom: 0.8rem;
 }
+.full-doc .doc-header-section p { margin: 0.1rem 0; }
+.italic-run { font-style: italic; }
+.body-label { color: #556677; font-weight: 600; font-style: normal; font-size: 0.9rem; margin-top: 0.6rem; }
 
 /* ── Stats bar ── */
 .stats-bar {
@@ -353,26 +357,34 @@ def get_doc_content(doc_id: str) -> dict:
         txt for txt, is_italic, _ in body_paras if is_italic
     )
 
-    # ── display_html: full doc, highlighting in body italic runs only ────────
-    header_html = '<div class="doc-header-section">' + '\n'.join(
-        txt for txt, _, __ in header_paras
-    ) + '</div>'
+    # ── display_html: full doc rendered with proper formatting ───────────────
+    header_parts = []
+    for txt, _, __ in header_paras:
+        stripped = txt.strip()
+        if stripped and stripped != '***':
+            header_parts.append(f'<p>{stripped}</p>')
+    header_html = '<div class="doc-header-section">' + ''.join(header_parts) + '</div>'
 
     body_lines = []
     for txt, is_italic, runs in body_paras:
+        stripped_txt = txt.strip()
+        if not stripped_txt:
+            body_lines.append('<p></p>')
+            continue
         if is_italic:
-            # Mark italic runs; non-italic runs within italic paragraphs stay plain
+            # Render each run: italic runs get the .italic-run class (styled italic in CSS)
             line = ''
             for run_txt, run_italic in runs:
                 if run_italic:
                     line += f'<span class="italic-run">{run_txt}</span>'
                 else:
                     line += run_txt
-            body_lines.append(line)
+            body_lines.append(f'<p>{line}</p>')
         else:
-            body_lines.append(f'<span style="color:#8899aa">{txt}</span>')
+            # Non-italic paragraphs (section headers like FEATURES, VERB, etc.)
+            body_lines.append(f'<p class="body-label">{stripped_txt}</p>')
 
-    body_html = '\n'.join(body_lines)
+    body_html = ''.join(body_lines)
 
     return {
         'italic_text':  italic_text,
@@ -415,7 +427,7 @@ def run_search(
     for i, doc in enumerate(corpus):
         bar.progress((i + 1) / max(len(corpus), 1), text=f"Searching · {doc['name']}")
         content      = get_doc_content(doc['doc_id'])
-        search_text  = content['body']
+        search_text  = content['italic_text']
 
         match_count   = 0
         matched_words = []
