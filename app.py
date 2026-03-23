@@ -230,7 +230,11 @@ _TURN_MARKER_HL = re.compile(r'^[-.][ \t\u00a0]')
 def _is_transcription_para(para_html: str) -> bool:
     """Same structural test used by extract_transcription_text."""
     text = html_lib.unescape(re.sub(r'<[^>]+>', '', para_html)).strip()
-    if not re.search(r'[^\x00-\x7F]', text):
+    non_ascii = re.findall(r'[^\x00-\x7F]', text)
+    # Require ≥8 % of characters to be non-ASCII: PAI transcription lines are
+    # dense with ā/ī/ħ/ʿ/š/ġ… (~20–40 %), while English summaries that happen
+    # to contain a single place-name like "Rīḥa" are only ~1–2 %.
+    if not non_ascii or len(non_ascii) / len(text) < 0.08:
         return False
     return bool(_TURN_MARKER_HL.match(text) or text[:1].isdigit())
 
@@ -313,8 +317,11 @@ def extract_transcription_text(html_doc: str) -> str:
         Structural filter: keeps only PAI transcription turns.
         Every such turn starts with a digit (numbered) or a turn marker (- / .).
         FEATURES examples, speaker bios, and header lines never start this way.
+        Requires ≥8 % non-ASCII density to exclude English summaries that
+        happen to contain a single PAI proper noun (e.g. "Rīḥa").
         """
-        if not re.search(r'[^\x00-\x7F]', text):
+        non_ascii = re.findall(r'[^\x00-\x7F]', text)
+        if not non_ascii or len(non_ascii) / max(len(text), 1) < 0.08:
             return False
         if not (TURN_MARKER.match(text) or text[:1].isdigit()):
             return False
