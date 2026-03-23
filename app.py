@@ -226,18 +226,88 @@ _MARK_STYLE = (
 
 def highlight_in_exported_html(html_doc: str, rx: re.Pattern) -> str:
     """Apply highlighting to text nodes only (skipping HTML tags) in a full HTML document."""
-    # Split on HTML tags so we never modify tag internals
     parts  = re.split(r'(<[^>]+>)', html_doc)
     result = []
     for part in parts:
         if part.startswith('<'):
-            result.append(part)   # tag — leave untouched
+            result.append(part)
         else:
             result.append(rx.sub(
                 lambda m: f'<mark style="{_MARK_STYLE}">{m.group()}</mark>',
                 part
             ))
     return ''.join(result)
+
+
+def extract_italic_from_gdoc_html(html_doc: str) -> str:
+    """
+    Extract italic-only transcription text from a Google Docs HTML export.
+
+    Google Docs HTML uses CSS classes (e.g. .c5 { font-style:italic }) rather
+    than inline styles for most formatting. This function:
+      1. Parses the <style> block to find which CSS classes are italic
+      2. Finds the *** paragraph separator
+      3. Returns text from body paragraphs where >50 % of characters are italic
+
+    This is far more reliable than the Docs API textStyle.italic flag, which
+    only reflects directly-applied (not inherited) run-level formatting.
+    """
+    # ── 1. Find italic CSS classes from the <style> block ────────────────────
+    italic_classes: set = set()
+    style_m = re.search(r'<style[^>]*>(.*?)</style>', html_doc, re.DOTALL | re.IGNORECASE)
+    if style_m:
+        css = style_m.group(1)
+        for rule_m in re.finditer(r'\.([\w-]+)\s*\{([^}]+)\}', css):
+            if re.search(r'font-style\s*:\s*italic', rule_m.group(2), re.IGNORECASE):
+                italic_classes.add(rule_m.group(1))
+
+    def _is_italic_span(attrs: str) -> bool:
+        """Return True if span attrs indicate italic styling."""
+        s = re.search(r'style="([^"]*)"', attrs)
+        if s and re.search(r'font-style\s*:\s*italic', s.group(1), re.IGNORECASE):
+            return True
+        c = re.search(r'class="([^"]*)"', attrs)
+        if c and set(c.group(1).split()) & italic_classes:
+            return True
+        return False
+
+    def _para_italic(para_html: str) -> tuple:
+        """Return (italic_text, is_mostly_italic) for a paragraph's inner HTML."""
+        spans = re.findall(r'<span\b([^>]*)>(.*?)</span>', para_html, re.DOTALL)
+        total_chars = italic_chars = 0
+        italic_parts = []
+        for attrs, content in spans:
+            text = unicodedata.normalize('NFC', re.sub(r'<[^>]+>', '', content))
+            total_chars += len(text)
+            if _is_italic_span(attrs):
+                italic_chars += len(text)
+                italic_parts.append(text)
+        # Require ≥80 % italic chars to qualify — filters FEATURES mixed lines
+        is_mostly_italic = total_chars > 0 and italic_chars / total_chars >= 0.8
+        return ''.join(italic_parts), is_mostly_italic
+
+    # ── 2. Extract all <p> paragraphs from the HTML body ─────────────────────
+    paragraphs = re.findall(r'<p\b[^>]*>(.*?)</p>', html_doc, re.DOTALL | re.IGNORECASE)
+
+    # ── 3. Locate the *** separator paragraph ────────────────────────────────
+    sep_idx = None
+    for i, para in enumerate(paragraphs):
+        # Strip all tags and whitespace/NBSP to get bare text
+        bare = re.sub(r'[\s\u00a0]+', '', re.sub(r'<[^>]+>', '', para))
+        if bare == '***':
+            sep_idx = i
+            break
+
+    body_paras = paragraphs[sep_idx + 1:] if sep_idx is not None else paragraphs
+
+    # ── 4. Collect text from mostly-italic body paragraphs ───────────────────
+    lines = []
+    for para in body_paras:
+        italic_text, is_mostly_italic = _para_italic(para)
+        if is_mostly_italic:
+            lines.append(italic_text)
+
+    return '\n'.join(lines)
 
 
 # ════════════════════════════════════════════════════════════════════════════════
@@ -330,46 +400,14 @@ def load_corpus_index() -> list[dict]:
 @st.cache_data(ttl=3600, show_spinner=False)
 def get_doc_content(doc_id: str) -> dict:
     """
-    Fetches a Google Doc and returns:
-      - italic_text:  only italic runs after *** (the transcription body) — used for search
-      - display_html: full Google Docs HTML export — displayed as-is for exact visual match
-      - body:         all post-separator text (fallback)
+    Fetches a Google Doc via the Drive API HTML export.
+      - display_html: full Google Docs HTML — rendered pixel-perfect in the viewer
+      - italic_text:  italic body text (after ***) extracted from the HTML CSS classes
+                      — used as the search index (reliable, no Docs API needed)
     """
     try:
-        drive_svc, docs_svc, _ = get_services()
+        drive_svc, _, _ = get_services()
 
-        # ── 1. Docs API: extract italic_text for search ──────────────────────
-        doc = docs_svc.documents().get(documentId=doc_id).execute()
-
-        paragraphs_italic = []
-        for elem in doc.get('body', {}).get('content', []):
-            para = elem.get('paragraph')
-            if not para:
-                continue
-            runs = []
-            for pe in para.get('elements', []):
-                tr = pe.get('textRun')
-                if not tr:
-                    continue
-                text   = unicodedata.normalize('NFC', tr.get('content', ''))
-                italic = tr.get('textStyle', {}).get('italic', False)
-                runs.append((text, italic))
-
-            full_para_text = ''.join(t for t, _ in runs)
-            italic_chars   = sum(len(t) for t, i in runs if i)
-            total_chars    = sum(len(t) for t, _ in runs)
-            is_italic      = (total_chars > 0) and (italic_chars / total_chars > 0.5)
-            paragraphs_italic.append((full_para_text, is_italic))
-
-        sep_idx = next(
-            (i for i, (txt, _) in enumerate(paragraphs_italic) if txt.strip() == '***'),
-            None
-        )
-        body_paras  = paragraphs_italic[sep_idx + 1:] if sep_idx is not None else paragraphs_italic
-        italic_text = '\n'.join(txt for txt, is_italic in body_paras if is_italic)
-        body_text   = '\n'.join(txt for txt, _ in body_paras)
-
-        # ── 2. Drive API: export full HTML for pixel-perfect display ─────────
         export_req = drive_svc.files().export_media(fileId=doc_id, mimeType='text/html')
         buf = io.BytesIO()
         dl  = MediaIoBaseDownload(buf, export_req)
@@ -379,12 +417,13 @@ def get_doc_content(doc_id: str) -> dict:
         display_html = buf.getvalue().decode('utf-8')
 
     except Exception:
-        return {'italic_text': '', 'display_html': '', 'body': ''}
+        return {'italic_text': '', 'display_html': ''}
+
+    italic_text = extract_italic_from_gdoc_html(display_html)
 
     return {
         'italic_text':  italic_text,
         'display_html': display_html,
-        'body':         body_text,
     }
 
 
