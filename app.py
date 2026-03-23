@@ -554,6 +554,25 @@ with mid:
             key="name_filter"
         )
 
+        st.markdown("---")
+        st.markdown("**🔬 Debug: inspect what text is extracted for a document**")
+        debug_name = st.text_input("Document name (partial)", key="debug_name",
+                                   placeholder="e.g. Xḏ̣.2M")
+        if st.button("Run extraction test", key="debug_btn") and corpus:
+            hits = [d for d in corpus if debug_name.lower() in d['name'].lower()] if debug_name else [corpus[0]]
+            if hits:
+                d = hits[0]
+                st.write(f"Testing: **{d['name']}**")
+                content = get_doc_content(d['doc_id'])
+                it = content.get('italic_text', '')
+                dh = content.get('display_html', '')
+                st.write(f"- HTML export length: **{len(dh)}** chars")
+                st.write(f"- Extracted italic_text: **{len(it)}** chars")
+                if it:
+                    st.text_area("First 600 chars of italic_text", it[:600], height=200)
+                else:
+                    st.error("italic_text is EMPTY — extraction failed")
+
     col_s, col_c = st.columns([5, 1])
     with col_s:
         search_clicked = st.button("Search corpus", type="primary", use_container_width=True)
