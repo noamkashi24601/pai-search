@@ -307,10 +307,10 @@ def get_doc_content(doc_id: str) -> dict:
       - display_html: full document rendered as HTML for the viewer
                       (header greyed out, body searchable)
     """
-    _, docs_svc, _ = get_services()
     try:
+        _, docs_svc, _ = get_services()
         doc = docs_svc.documents().get(documentId=doc_id).execute()
-    except HttpError:
+    except Exception:
         return {'italic_text': '', 'display_html': '', 'body': ''}
 
     # ── Extract paragraph by paragraph, preserving italic info ──────────────
@@ -526,7 +526,11 @@ with st.spinner("Loading corpus index from Google Sheets…"):
 
 # ── Results ───────────────────────────────────────────────────────────────────
 if search_clicked and pattern_input.strip() and corpus:
-    results = run_search(pattern_input.strip(), position, name_filter, corpus)
+    try:
+        results = run_search(pattern_input.strip(), position, name_filter, corpus)
+    except Exception as e:
+        st.error(f"Search failed: {e}")
+        results = []
 
     if not results:
         st.info("No matches found for this pattern.")
