@@ -239,60 +239,31 @@ def highlight_in_exported_html(html_doc: str, rx: re.Pattern) -> str:
     return ''.join(result)
 
 
-def extract_italic_from_gdoc_html(html_doc: str) -> str:
+def extract_transcription_text(html_doc: str) -> str:
     """
-    Extract italic-only transcription text from a Google Docs HTML export.
+    Extract the transcription search index from a Google Docs HTML export.
 
-    Google Docs HTML uses CSS classes (e.g. .c5 { font-style:italic }) rather
-    than inline styles for most formatting. This function:
-      1. Parses the <style> block to find which CSS classes are italic
-      2. Finds the *** paragraph separator
-      3. Returns text from body paragraphs where >50 % of characters are italic
+    Strategy (two filters combined):
+      1. Only paragraphs AFTER the *** separator  →  skips the header block
+      2. Only paragraphs that contain at least one non-ASCII character
+         (i.e. a PAI transliteration character such as ā ō ū ī ē ḥ ẓ ḍ ṭ ṣ
+          ġ ǧ š ʿ ʾ ɑ̄ ə)  →  skips structural ASCII-only lines like
+         "FEATURES", "VERB PARADIGM", "PERFECT", "1sg:", "Active Participle:",
+         "***", numbered headings, etc.
 
-    This is far more reliable than the Docs API textStyle.italic flag, which
-    only reflects directly-applied (not inherited) run-level formatting.
+    Every transcription sentence in the corpus is in Palestinian Arabic
+    transliteration and therefore always contains PAI special characters.
+    Plain-English structural lines never do.
+
+    This is simpler and more reliable than parsing CSS italic classes,
+    and has negligible performance cost (one regex per paragraph text).
     """
-    # ── 1. Find italic CSS classes from the <style> block ────────────────────
-    italic_classes: set = set()
-    style_m = re.search(r'<style[^>]*>(.*?)</style>', html_doc, re.DOTALL | re.IGNORECASE)
-    if style_m:
-        css = style_m.group(1)
-        for rule_m in re.finditer(r'\.([\w-]+)\s*\{([^}]+)\}', css):
-            if re.search(r'font-style\s*:\s*italic', rule_m.group(2), re.IGNORECASE):
-                italic_classes.add(rule_m.group(1))
-
-    def _is_italic_span(attrs: str) -> bool:
-        """Return True if span attrs indicate italic styling."""
-        s = re.search(r'style="([^"]*)"', attrs)
-        if s and re.search(r'font-style\s*:\s*italic', s.group(1), re.IGNORECASE):
-            return True
-        c = re.search(r'class="([^"]*)"', attrs)
-        if c and set(c.group(1).split()) & italic_classes:
-            return True
-        return False
-
-    def _para_italic(para_html: str) -> tuple:
-        """Return (italic_text, is_mostly_italic) for a paragraph's inner HTML."""
-        spans = re.findall(r'<span\b([^>]*)>(.*?)</span>', para_html, re.DOTALL)
-        total_chars = italic_chars = 0
-        italic_parts = []
-        for attrs, content in spans:
-            text = unicodedata.normalize('NFC', re.sub(r'<[^>]+>', '', content))
-            total_chars += len(text)
-            if _is_italic_span(attrs):
-                italic_chars += len(text)
-                italic_parts.append(text)
-        # Require ≥80 % italic chars to qualify — filters FEATURES mixed lines
-        is_mostly_italic = total_chars > 0 and italic_chars / total_chars >= 0.8
-        return ''.join(italic_parts), is_mostly_italic
-
-    # ── 2. Extract all <p> paragraphs from the HTML body ─────────────────────
+    # ── 1. Extract all <p> paragraphs ────────────────────────────────────────
     paragraphs = re.findall(r'<p\b[^>]*>(.*?)</p>', html_doc, re.DOTALL | re.IGNORECASE)
 
-    # ── 3. Locate the *** separator paragraph ────────────────────────────────
+    # ── 2. Find *** separator ─────────────────────────────────────────────────
     sep_idx = None
     for i, para in enumerate(paragraphs):
-        # Strip all tags and whitespace/NBSP to get bare text
         bare = re.sub(r'[\s\u00a0]+', '', re.sub(r'<[^>]+>', '', para))
         if bare == '***':
             sep_idx = i
@@ -300,12 +271,12 @@ def extract_italic_from_gdoc_html(html_doc: str) -> str:
 
     body_paras = paragraphs[sep_idx + 1:] if sep_idx is not None else paragraphs
 
-    # ── 4. Collect text from mostly-italic body paragraphs ───────────────────
+    # ── 3. Keep only paragraphs with at least one non-ASCII (PAI) character ──
     lines = []
     for para in body_paras:
-        italic_text, is_mostly_italic = _para_italic(para)
-        if is_mostly_italic:
-            lines.append(italic_text)
+        text = unicodedata.normalize('NFC', re.sub(r'<[^>]+>', '', para)).strip()
+        if text and re.search(r'[^\x00-\x7F]', text):
+            lines.append(text)
 
     return '\n'.join(lines)
 
@@ -419,7 +390,7 @@ def get_doc_content(doc_id: str) -> dict:
     except Exception:
         return {'italic_text': '', 'display_html': ''}
 
-    italic_text = extract_italic_from_gdoc_html(display_html)
+    italic_text = extract_transcription_text(display_html)
 
     return {
         'italic_text':  italic_text,
