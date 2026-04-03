@@ -360,6 +360,50 @@ COL_VILLAGE    = 1    # שם יישוב בתעתיק
 COL_COMMUNITY  = 4    # קהילה
 COL_GENDER     = 8    # מגדר דובר
 
+# ── Feature column definitions: (1-based col, col_letter, display_name, type, options) ──
+# type: 'bool' = checkbox  |  'select' = fixed options  |  'text' = free text
+FEATURE_DEFS: list[tuple] = [
+    (13, 'M',  'aCC>iCC',                              'bool',   None),
+    (14, 'N',  'diphthongs',                           'bool',   None),
+    (15, 'O',  'fem. ending',                          'select', ['-i', '-e', '-a', 'pausal']),
+    (16, 'P',  'med. Imāla',                           'bool',   None),
+    (17, 'Q',  '-a+n (Aram. sub.)',                    'bool',   None),
+    (18, 'R',  'pausal -u>-o#, -i>-e#',               'bool',   None),
+    (19, 'S',  'ج',                                    'select', ['ž', 'ǧ', 'conditioned']),
+    (20, 'T',  'ق',                                    'select', ['q', 'ʾ', 'g', 'k', 'g/ǧ/k (conditioned)']),
+    (21, 'U',  'assimilation of gutturals to the left','bool',   None),
+    (22, 'V',  'vowel epenthesis',                     'select', ['*CCC > CvCC', '*CCC > CCvC']),
+    (23, 'W',  'vocal harmonizing',                    'bool',   None),
+    (24, 'X',  'lowering of -uC>-oC/-iC>-eC',         'bool',   None),
+    (25, 'Y',  'independent pronoun 1.pl نحن',         'select', ['niḥna', 'iḥna']),
+    (26, 'Z',  'independent pronoun 3.pl هم',          'select', ['hinne/hinne', 'hunne', 'hunni', 'humme/homme', 'hum/hom']),
+    (27, 'AA', '2.m.pl pron. كم-',                     'select', ['-ku/-ko', '-kum/-kom', '-čin']),
+    (28, 'AB', '3.m.pl (poss. pro) هم-',               'select', ['-h- > -∅- (e.g. -on)', '-hum/-hom', '-hin/-hen']),
+    (29, 'AC', '3.f.sg pron. ها-',                     'select', ['-a', '-a / -ya (after -i-)', '-ha',
+                                                                   '-a; -ha only after -ū-',
+                                                                   '-a; -ha only after -ū- / -i-', '-hä#/-he#']),
+    (30, 'AD', 'impf. prefix 3.m.sg',                  'select', ['bi-', 'byi-', 'yi-']),
+    (31, 'AE', '"want"',                               'select', ['badd', 'bidd', 'widd']),
+    (32, 'AF', '"now"',                                'select', ['issa/hassāʿa', 'hallaʾ/halʾēt/halkēt/halgēt', 'alḥīn']),
+    (33, 'AG', '"when?"',                              'select', ['ēmta', 'wēnta', 'wagtēš']),
+    (34, 'AH', '"here"',                               'select', ['hōn', 'hīn', 'hān', 'hina']),
+    (35, 'AI', '"was"',                                'select', ['kān', 'kān / čān', 'baka~biki / yibki~yibka',
+                                                                  'baka/biki', 'baka~biki / yikbi~yikba']),
+]
+
+# Features that appear in the doc FEATURES section but are NOT in the M-AI spreadsheet columns
+DOC_ONLY_FEATURES: list[str] = [
+    'long particles',
+    'sandhi',
+    '-a~-ä/-e#',
+    'ḌLL+pron.',
+    'Continuous modifier',
+    'Anticipatory pronominal suffix',
+]
+
+# Map from feature display_name → FEATURE_DEFS entry (for fast lookup)
+_FEAT_BY_NAME: dict = {fd[2]: fd for fd in FEATURE_DEFS}
+
 
 @st.cache_resource
 def get_services():
@@ -367,9 +411,9 @@ def get_services():
     creds = service_account.Credentials.from_service_account_info(
         creds_dict,
         scopes=[
-            'https://www.googleapis.com/auth/drive.readonly',
-            'https://www.googleapis.com/auth/documents.readonly',
-            'https://www.googleapis.com/auth/spreadsheets.readonly',
+            'https://www.googleapis.com/auth/drive',
+            'https://www.googleapis.com/auth/documents',
+            'https://www.googleapis.com/auth/spreadsheets',
         ]
     )
     drive   = build('drive',   'v3', credentials=creds)
@@ -401,16 +445,16 @@ def load_corpus_index() -> list[dict]:
     grid = result['sheets'][0]['data'][0]['rowData']
     corpus = []
 
-    for row in grid[1:]:   # skip header row
+    for grid_row_idx, row in enumerate(grid[1:], start=2):   # skip header; sheet row = grid_idx+1
         cells = row.get('values', [])
 
-        def cell_val(idx):
-            if idx >= len(cells): return None
-            return cells[idx].get('formattedValue')
+        def cell_val(idx, _cells=cells):
+            if idx >= len(_cells): return None
+            return _cells[idx].get('formattedValue')
 
-        def cell_link(idx):
-            if idx >= len(cells): return None
-            return cells[idx].get('hyperlink')
+        def cell_link(idx, _cells=cells):
+            if idx >= len(_cells): return None
+            return _cells[idx].get('hyperlink')
 
         trans_name = cell_val(COL_TRANS_LINK)
         trans_url  = cell_link(COL_TRANS_LINK)
@@ -424,11 +468,12 @@ def load_corpus_index() -> list[dict]:
             continue
 
         corpus.append({
-            'name':      trans_name or cell_val(COL_REC_LINK) or doc_id,
-            'doc_id':    doc_id,
-            'village':   cell_val(COL_VILLAGE)   or '',
-            'community': cell_val(COL_COMMUNITY) or '',
-            'gender':    cell_val(COL_GENDER)    or '',
+            'name':       trans_name or cell_val(COL_REC_LINK) or doc_id,
+            'doc_id':     doc_id,
+            'village':    cell_val(COL_VILLAGE)   or '',
+            'community':  cell_val(COL_COMMUNITY) or '',
+            'gender':     cell_val(COL_GENDER)    or '',
+            'sheet_row':  grid_row_idx,   # 1-based row number in the Recordings sheet
         })
 
     return corpus
@@ -462,6 +507,166 @@ def get_doc_content(doc_id: str) -> dict:
         'italic_text':  italic_text,
         'display_html': display_html,
     }
+
+
+# ════════════════════════════════════════════════════════════════════════════════
+#  FEATURE READ / WRITE
+# ════════════════════════════════════════════════════════════════════════════════
+
+@st.cache_data(ttl=300, show_spinner=False)
+def get_sheet_features(sheet_row: int) -> dict:
+    """
+    Read feature values (columns M–AI) for a single Recordings sheet row.
+    Returns {col_letter: value} where value is True/False for bool cols or str for select cols.
+    """
+    _, _, sheets_svc = get_services()
+    first_col, last_col = FEATURE_DEFS[0][1], FEATURE_DEFS[-1][1]   # 'M', 'AI'
+    range_a1 = f"Recordings!{first_col}{sheet_row}:{last_col}{sheet_row}"
+    result = sheets_svc.spreadsheets().values().get(
+        spreadsheetId=SPREADSHEET_ID,
+        range=range_a1,
+        valueRenderOption='UNFORMATTED_VALUE',
+    ).execute()
+    raw = (result.get('values') or [[]])[0]
+    out = {}
+    for i, fd in enumerate(FEATURE_DEFS):
+        val = raw[i] if i < len(raw) else None
+        if fd[3] == 'bool':
+            out[fd[1]] = bool(val) if val is not None else None
+        else:
+            out[fd[1]] = str(val) if val else None
+    return out
+
+
+def write_sheet_features(sheet_row: int, changes: dict[str, object]) -> list[str]:
+    """
+    Write feature changes to Google Sheets.
+    changes: {col_letter: new_value}
+    Returns list of conflict messages (non-empty if any existing value differs).
+    """
+    _, _, sheets_svc = get_services()
+    current = get_sheet_features(sheet_row)
+    conflicts = []
+
+    # Detect conflicts: existing non-null value that differs from the proposed change
+    for col_letter, new_val in changes.items():
+        cur_val = current.get(col_letter)
+        if cur_val is not None and cur_val != new_val:
+            fd = next((f for f in FEATURE_DEFS if f[1] == col_letter), None)
+            name = fd[2] if fd else col_letter
+            conflicts.append(
+                f"**{name}**: spreadsheet has `{cur_val}`, you tagged `{new_val}`"
+            )
+
+    if conflicts:
+        return conflicts
+
+    # Write each changed cell
+    data = []
+    for col_letter, new_val in changes.items():
+        fd = next((f for f in FEATURE_DEFS if f[1] == col_letter), None)
+        if fd is None:
+            continue
+        cell_a1 = f"Recordings!{col_letter}{sheet_row}"
+        if fd[3] == 'bool':
+            data.append({'range': cell_a1, 'values': [[bool(new_val)]]})
+        else:
+            data.append({'range': cell_a1, 'values': [[new_val]]})
+
+    if data:
+        sheets_svc.spreadsheets().values().batchUpdate(
+            spreadsheetId=SPREADSHEET_ID,
+            body={'valueInputOption': 'RAW', 'data': data},
+        ).execute()
+        get_sheet_features.clear()   # invalidate cache
+
+    return []
+
+
+def _build_features_block(sheet_vals: dict, doc_only_vals: dict) -> str:
+    """Build the FEATURES text block to write into the Google Doc."""
+    lines = ['FEATURES:']
+    # M-AI features (from spreadsheet)
+    for fd in FEATURE_DEFS:
+        col_l, name, ftype = fd[1], fd[2], fd[3]
+        val = sheet_vals.get(col_l)
+        if ftype == 'bool':
+            lines.append(f'{name}  [{"+" if val else ""}]')
+        else:
+            lines.append(f'{name}  [{val or ""}]')
+    # Doc-only features
+    for name in DOC_ONLY_FEATURES:
+        val = doc_only_vals.get(name)
+        if isinstance(val, bool):
+            lines.append(f'{name}  [{"+" if val else ""}]')
+        elif val:
+            lines.append(f'{name}  [{val}]')
+        else:
+            lines.append(f'{name}  []')
+    return '\n'.join(lines)
+
+
+def update_gdoc_features_section(doc_id: str, sheet_vals: dict, doc_only_vals: dict):
+    """
+    Replace (or append) the FEATURES section in the Google Doc.
+    Uses the Docs API batchUpdate with deleteContentRange + insertText.
+    """
+    _, docs_svc, _ = get_services()
+    doc = docs_svc.documents().get(documentId=doc_id).execute()
+    body_content = doc.get('body', {}).get('content', [])
+
+    all_feature_names = {fd[2] for fd in FEATURE_DEFS} | set(DOC_ONLY_FEATURES)
+
+    feat_start = None   # startIndex of "FEATURES:" paragraph
+    feat_end   = None   # startIndex of paragraph AFTER the features block
+
+    for elem in body_content:
+        if 'paragraph' not in elem:
+            continue
+        text = ''.join(
+            e.get('textRun', {}).get('content', '')
+            for e in elem['paragraph'].get('elements', [])
+        ).strip()
+
+        if text == 'FEATURES:':
+            feat_start = elem['startIndex']
+            continue
+
+        if feat_start is not None:
+            # End the block when we hit an empty line or something outside the feature list
+            if text and not any(text.startswith(fn) for fn in all_feature_names):
+                feat_end = elem['startIndex']
+                break
+
+    new_block = _build_features_block(sheet_vals, doc_only_vals)
+
+    if feat_start is None:
+        # No FEATURES section — append at the end of the document
+        end_idx = body_content[-1]['endIndex'] - 1
+        docs_svc.documents().batchUpdate(
+            documentId=doc_id,
+            body={'requests': [{'insertText': {
+                'location': {'index': end_idx},
+                'text': '\n\n' + new_block,
+            }}]},
+        ).execute()
+    else:
+        end_idx = feat_end if feat_end else body_content[-1]['endIndex'] - 1
+        # Delete old block, then insert new one at same position
+        docs_svc.documents().batchUpdate(
+            documentId=doc_id,
+            body={'requests': [
+                {'deleteContentRange': {'range': {
+                    'startIndex': feat_start, 'endIndex': end_idx,
+                }}},
+                {'insertText': {
+                    'location': {'index': feat_start},
+                    'text': new_block,
+                }},
+            ]},
+        ).execute()
+
+    get_doc_content.clear()   # force re-fetch of the display HTML
 
 
 # ════════════════════════════════════════════════════════════════════════════════
@@ -515,6 +720,8 @@ def run_search(
 
             results.append({
                 'name':          doc['name'],
+                'doc_id':        doc['doc_id'],
+                'sheet_row':     doc.get('sheet_row'),
                 'village':       doc['village'],
                 'community':     doc['community'],
                 'gender':        doc['gender'],
@@ -527,6 +734,145 @@ def run_search(
     bar.empty()
     results.sort(key=lambda r: r['match_count'], reverse=True)
     return results
+
+
+# ════════════════════════════════════════════════════════════════════════════════
+#  FEATURE TAGGING PANEL
+# ════════════════════════════════════════════════════════════════════════════════
+
+def _render_feature_panel(doc_id: str, doc_name: str, sheet_row: int):
+    """
+    Renders the feature tagging expander below a document viewer.
+    Loads current values from Google Sheets, lets the user edit them,
+    and on Submit writes back to the sheet and updates the Google Doc.
+    """
+    sk = f"feat_{doc_id}"   # unique session-state namespace for this doc
+
+    with st.expander("✏️  Tag features for this document", expanded=False):
+        st.caption(
+            f"Changes are written to the **Recordings** sheet row {sheet_row} "
+            f"(columns M–AI) and to the Google Doc's FEATURES section. "
+            f"Right-click the transcript above to copy a word, then record the feature below."
+        )
+
+        # Load current sheet values (cached)
+        try:
+            current = get_sheet_features(sheet_row)
+        except Exception as e:
+            st.error(f"Could not load spreadsheet values: {e}")
+            return
+
+        # Session-state keys for pending edits
+        if f"{sk}_pending" not in st.session_state:
+            st.session_state[f"{sk}_pending"] = {}   # {col_letter: new_value}
+        if f"{sk}_doc_only" not in st.session_state:
+            st.session_state[f"{sk}_doc_only"] = {}  # {feature_name: value}
+
+        pending   = st.session_state[f"{sk}_pending"]
+        doc_only  = st.session_state[f"{sk}_doc_only"]
+
+        st.markdown("#### Spreadsheet features (M–AI)")
+        # Render in 2-column grid
+        col_pairs = list(zip(FEATURE_DEFS[::2], FEATURE_DEFS[1::2]))
+        if len(FEATURE_DEFS) % 2:
+            col_pairs.append((FEATURE_DEFS[-1], None))
+
+        for fd_left, fd_right in col_pairs:
+            c1, c2 = st.columns(2)
+            for col, fd in [(c1, fd_left), (c2, fd_right)]:
+                if fd is None:
+                    continue
+                col_l, name, ftype, opts = fd[1], fd[2], fd[3], fd[4]
+                cur_val = pending.get(col_l, current.get(col_l))
+                widget_key = f"{sk}_{col_l}"
+
+                with col:
+                    if ftype == 'bool':
+                        new_val = st.checkbox(
+                            name, value=bool(cur_val), key=widget_key,
+                        )
+                    else:
+                        choices = ['(not set)'] + (opts or [])
+                        cur_idx = (choices.index(cur_val)
+                                   if cur_val in choices else 0)
+                        sel = st.selectbox(
+                            name, choices, index=cur_idx, key=widget_key,
+                        )
+                        new_val = None if sel == '(not set)' else sel
+
+                    # Track change vs. original sheet value
+                    orig = current.get(col_l)
+                    if new_val != orig:
+                        pending[col_l] = new_val
+                    elif col_l in pending and pending[col_l] == orig:
+                        del pending[col_l]
+
+        st.markdown("#### Document-only features")
+        for name in DOC_ONLY_FEATURES:
+            cur_val = doc_only.get(name)
+            new_val = st.checkbox(name, value=bool(cur_val),
+                                  key=f"{sk}_donly_{name}")
+            doc_only[name] = new_val
+
+        # ── Submit button ─────────────────────────────────────────────────
+        has_changes = bool(pending) or any(doc_only.values())
+        if has_changes:
+            n_changes = len(pending) + sum(1 for v in doc_only.values() if v)
+            if st.button(
+                f"💾  Submit {n_changes} change(s) for **{doc_name}**",
+                key=f"{sk}_submit", type="primary",
+            ):
+                st.session_state[f"{sk}_confirm"] = True
+
+        if st.session_state.get(f"{sk}_confirm"):
+            st.warning(
+                f"⚠️  You are about to write **{len(pending)}** spreadsheet "
+                f"change(s) and update the Google Doc for **{doc_name}**. "
+                f"This cannot be undone. Proceed?"
+            )
+            yes_col, no_col = st.columns(2)
+            with yes_col:
+                if st.button("✅  Yes, submit", key=f"{sk}_yes"):
+                    # 1. Write to Google Sheets
+                    conflicts = []
+                    if pending:
+                        try:
+                            conflicts = write_sheet_features(sheet_row, pending)
+                        except Exception as e:
+                            st.error(f"Spreadsheet write failed: {e}")
+                            st.session_state[f"{sk}_confirm"] = False
+                            return
+
+                    if conflicts:
+                        st.error(
+                            "⚠️  Some values already exist in the spreadsheet "
+                            "and differ from your tagging — **not written**:\n\n"
+                            + "\n".join(f"- {c}" for c in conflicts)
+                        )
+                        st.session_state[f"{sk}_confirm"] = False
+                        return
+
+                    # 2. Update Google Doc FEATURES section
+                    try:
+                        # Merge sheet values: original + accepted changes
+                        merged_sheet = {**current, **pending}
+                        update_gdoc_features_section(doc_id, merged_sheet, doc_only)
+                    except Exception as e:
+                        st.error(f"Google Doc update failed: {e}")
+                        st.session_state[f"{sk}_confirm"] = False
+                        return
+
+                    # 3. Clear pending state
+                    st.session_state[f"{sk}_pending"] = {}
+                    st.session_state[f"{sk}_doc_only"] = {}
+                    st.session_state[f"{sk}_confirm"] = False
+                    st.success(f"✅  Features saved for **{doc_name}**!")
+                    st.rerun()
+
+            with no_col:
+                if st.button("❌  Cancel", key=f"{sk}_no"):
+                    st.session_state[f"{sk}_confirm"] = False
+                    st.rerun()
 
 
 # ════════════════════════════════════════════════════════════════════════════════
@@ -639,6 +985,10 @@ if search_clicked and pattern_input.strip() and corpus:
                 """, unsafe_allow_html=True)
 
                 components.html(r['display_html'], height=550, scrolling=True)
+
+                # ── Feature tagging panel ───────────────────────────────────
+                if r.get('sheet_row'):
+                    _render_feature_panel(r['doc_id'], r['name'], r['sheet_row'])
 
 elif search_clicked and not pattern_input.strip():
     st.warning("Please enter a pattern before searching.")
