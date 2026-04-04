@@ -289,9 +289,10 @@ def inject_interaction_js(html_doc: str, doc_id: str) -> str:
 <style>
 #pai-ctx-menu {{
   position:fixed; z-index:999999; min-width:250px; max-width:310px;
+  max-height:min(78vh, 500px);
   background:#1c1c1e; border-radius:12px;
   box-shadow:0 8px 40px rgba(0,0,0,.6);
-  padding:0; display:none;
+  padding:0; display:none; flex-direction:column;
   font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;
   font-size:13px; color:#f2f2f7; user-select:none;
   overflow:hidden;
@@ -300,14 +301,13 @@ def inject_interaction_js(html_doc: str, doc_id: str) -> str:
   padding:7px 14px 6px; font-size:11px; color:#aaa;
   letter-spacing:.08em; text-transform:uppercase;
   border-bottom:1px solid #333; background:#1c1c1e;
-  position:sticky; top:0; z-index:2;
+  flex-shrink:0;
 }}
 #pai-ctx-scroll {{
-  max-height:min(65vh, 380px);
+  flex:1; min-height:0;
   overflow-y:auto;
   overflow-x:hidden;
   padding:4px 0;
-  /* thin scrollbar */
   scrollbar-width:thin;
   scrollbar-color:#444 transparent;
 }}
@@ -335,24 +335,89 @@ def inject_interaction_js(html_doc: str, doc_id: str) -> str:
 }}
 .ctx-sub-item {{ padding:7px 16px; cursor:pointer; white-space:nowrap; }}
 .ctx-sub-item:hover {{ background:rgba(255,255,255,.09); }}
+/* ── inline edit section ── */
+#ctx-edit-section {{
+  padding:8px 12px 10px; border-bottom:1px solid #333;
+  background:#1c1c1e; flex-shrink:0;
+}}
+#ctx-edit-label {{
+  font-size:10px; color:#aaa; letter-spacing:.07em;
+  text-transform:uppercase; margin-bottom:6px;
+}}
+#ctx-edit-row {{
+  display:flex; gap:6px; align-items:center;
+}}
+#ctx-edit-input {{
+  flex:1; background:#2c2c2e; border:1px solid #444;
+  border-radius:7px; color:#f2f2f7; font-size:13px;
+  padding:5px 9px; outline:none; font-family:inherit;
+  min-width:0;
+}}
+#ctx-edit-input:focus {{ border-color:#60aee8; }}
+#ctx-edit-btn {{
+  background:#2075c7; border:none; border-radius:7px;
+  color:white; font-size:16px; padding:4px 10px;
+  cursor:pointer; flex-shrink:0; line-height:1;
+}}
+#ctx-edit-btn:hover {{ background:#1a5fa8; }}
+#ctx-edit-note {{
+  font-size:10px; color:#666; margin-top:5px;
+}}
 </style>
 <div id="pai-ctx-menu">
   <div id="pai-ctx-header">TAG FEATURE</div>
+  <!-- inline edit section -->
+  <div id="ctx-edit-section">
+    <div id="ctx-edit-label">✏️ Replace word</div>
+    <div id="ctx-edit-row">
+      <input id="ctx-edit-input" type="text" placeholder="replacement…" autocomplete="off" spellcheck="false"/>
+      <button id="ctx-edit-btn" title="Apply">↵</button>
+    </div>
+    <div id="ctx-edit-note">Replaces all occurrences in the document</div>
+  </div>
   <div id="pai-ctx-scroll"></div>
 </div>
 <div id="pai-ctx-sub" class="ctx-sub"></div>
 <script>
 (function(){{
-  const FEATURES  = {features_js};
-  const DOC_ID    = {json.dumps(doc_id)};
-  const menu      = document.getElementById('pai-ctx-menu');
-  const header    = document.getElementById('pai-ctx-header');
-  const scroll    = document.getElementById('pai-ctx-scroll');
-  const subMenu   = document.getElementById('pai-ctx-sub');
-  let   selText   = '';
+  const FEATURES   = {features_js};
+  const DOC_ID     = {json.dumps(doc_id)};
+  const menu       = document.getElementById('pai-ctx-menu');
+  const header     = document.getElementById('pai-ctx-header');
+  const scroll     = document.getElementById('pai-ctx-scroll');
+  const subMenu    = document.getElementById('pai-ctx-sub');
+  const editInput  = document.getElementById('ctx-edit-input');
+  const editBtn    = document.getElementById('ctx-edit-btn');
+  const editSect   = document.getElementById('ctx-edit-section');
+  let   selText    = '';
   let   activeItem = null;
 
-  // ── Build menu items ────────────────────────────────────────────────────
+  // ── Edit section: stop clicks bubbling to the close-menu handler ────────
+  editSect.addEventListener('click',   function(e) {{ e.stopPropagation(); }});
+  editSect.addEventListener('mousedown', function(e) {{ e.stopPropagation(); }});
+
+  function applyEdit() {{
+    const repl = editInput.value;
+    if (!repl || repl === selText) return;
+    menu.style.display = 'none';
+    hideSubMenu();
+    try {{
+      localStorage.setItem('pai_pending_tag', JSON.stringify({{
+        type:      'edit',
+        find:      selText,
+        replace:   repl,
+        docId:     DOC_ID,
+        timestamp: Date.now()
+      }}));
+    }} catch(e) {{}}
+  }}
+  editBtn.addEventListener('click', applyEdit);
+  editInput.addEventListener('keydown', function(e) {{
+    if (e.key === 'Enter') {{ e.preventDefault(); applyEdit(); }}
+    e.stopPropagation();
+  }});
+
+  // ── Build feature menu items ────────────────────────────────────────────
   FEATURES.forEach(function(fd) {{
     const item = document.createElement('div');
     item.className = 'ctx-item';
@@ -417,7 +482,7 @@ def inject_interaction_js(html_doc: str, doc_id: str) -> str:
     // First position at click, then adjust to keep fully inside viewport
     const vw = window.innerWidth, vh = window.innerHeight;
     menu.style.left = '0'; menu.style.top = '0';
-    menu.style.display = 'block';
+    menu.style.display = 'flex';
     scroll.scrollTop = 0;
     const mr = menu.getBoundingClientRect();
     let x = e.clientX, y = e.clientY;
@@ -1168,17 +1233,43 @@ with st.spinner("Loading corpus index from Google Sheets…"):
 # ── Bridge component: listens for right-click tags from document iframes ──────
 _bridge_tag = _TAG_BRIDGE(key="tagbridge")
 if _bridge_tag:
+    _bt_type = _bridge_tag.get('type', '')
     doc_id   = _bridge_tag.get('docId', '')
-    feat_name = _bridge_tag.get('feature', '')
-    feat_val  = _bridge_tag.get('value')
-    fd = _FEAT_BY_NAME.get(feat_name)
-    if fd and doc_id:
-        sk = f"feat_{doc_id}"
-        if f"{sk}_pending" not in st.session_state:
-            st.session_state[f"{sk}_pending"] = {}
-        st.session_state[f"{sk}_pending"][fd[1]] = feat_val
-        st.session_state[f"{sk}_auto_expand"] = True
+
+    if _bt_type == 'edit':
+        # ── Inline find-and-replace from context menu ──────────────────────────
+        find_text = _bridge_tag.get('find', '').strip()
+        repl_text = _bridge_tag.get('replace', '').strip()
+        if find_text and repl_text and doc_id:
+            try:
+                n = find_replace_in_gdoc(doc_id, find_text, repl_text)
+                st.session_state['_ctx_edit_result'] = (find_text, repl_text, n, None)
+            except Exception as e:
+                st.session_state['_ctx_edit_result'] = (find_text, repl_text, 0, str(e))
         st.session_state['_bridge_tag_processed'] = True
+
+    else:
+        # ── Feature tag from context menu ──────────────────────────────────────
+        feat_name = _bridge_tag.get('feature', '')
+        feat_val  = _bridge_tag.get('value')
+        fd = _FEAT_BY_NAME.get(feat_name)
+        if fd and doc_id:
+            sk = f"feat_{doc_id}"
+            if f"{sk}_pending" not in st.session_state:
+                st.session_state[f"{sk}_pending"] = {}
+            st.session_state[f"{sk}_pending"][fd[1]] = feat_val
+            st.session_state[f"{sk}_auto_expand"] = True
+            st.session_state['_bridge_tag_processed'] = True
+
+# ── Show result of context-menu find-replace (survives the rerun) ─────────────
+if '_ctx_edit_result' in st.session_state:
+    _find, _repl, _n, _err = st.session_state.pop('_ctx_edit_result')
+    if _err:
+        st.error(f'Replace failed: {_err}')
+    elif _n:
+        st.success(f'✅  Replaced {_n} occurrence(s) of "{_find}" → "{_repl}"')
+    else:
+        st.info(f'No occurrences of "{_find}" found in this document.')
 
 # ── Results ───────────────────────────────────────────────────────────────────
 if search_clicked and pattern_input.strip() and corpus:
