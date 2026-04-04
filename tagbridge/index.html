@@ -1,0 +1,29 @@
+<!DOCTYPE html>
+<html>
+<head><meta charset="utf-8"></head>
+<body style="margin:0;padding:0;overflow:hidden">
+<script>
+// ── Streamlit component protocol ────────────────────────────────────────────
+function postST(msg) {
+  window.parent.postMessage(Object.assign({isStreamlitMessage: true}, msg), '*');
+}
+postST({type: 'streamlit:componentReady', apiVersion: 1});
+postST({type: 'streamlit:setFrameHeight', height: 0});
+
+// ── Poll localStorage for right-click tag from document iframes ─────────────
+var lastTs = 0;
+setInterval(function() {
+  try {
+    var raw = localStorage.getItem('pai_pending_tag');
+    if (!raw) return;
+    var data = JSON.parse(raw);
+    if (data && data.timestamp > lastTs) {
+      lastTs = data.timestamp;
+      localStorage.removeItem('pai_pending_tag');
+      postST({type: 'streamlit:setComponentValue', value: data, dataType: 'json'});
+    }
+  } catch(e) {}
+}, 150);
+</script>
+</body>
+</html>

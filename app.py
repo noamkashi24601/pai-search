@@ -11,10 +11,17 @@ import io
 import html as html_lib
 import unicodedata
 import json
+from pathlib import Path
 from google.oauth2 import service_account
 from googleapiclient.discovery import build
 from googleapiclient.errors import HttpError
 from googleapiclient.http import MediaIoBaseDownload
+
+# ── Declare bridge component (zero-height iframe that relays right-click tags) ─
+_TAG_BRIDGE = components.declare_component(
+    "pai_tag_bridge",
+    path=str(Path(__file__).parent / "tagbridge"),
+)
 
 st.set_page_config(page_title="PAI Corpus Search", layout="wide", page_icon="◌")
 
@@ -265,6 +272,145 @@ def highlight_in_exported_html(html_doc: str, rx: re.Pattern) -> str:
         last_end = m.end()
     result.append(html_doc[last_end:])
     return ''.join(result)
+
+
+def inject_interaction_js(html_doc: str, doc_id: str) -> str:
+    """
+    Inject right-click context menu and edit-mode support into a Google Docs
+    HTML export before it is rendered in the iframe.
+    """
+    # Serialize feature list for JavaScript
+    features_js = json.dumps([
+        {'name': fd[2], 'type': fd[3], 'opts': fd[4] or []}
+        for fd in FEATURE_DEFS
+    ])
+
+    script = f"""
+<style>
+#pai-ctx-menu {{
+  position:fixed; z-index:999999; min-width:240px;
+  background:#1c1c1e; border-radius:12px;
+  box-shadow:0 8px 40px rgba(0,0,0,.6);
+  padding:5px 0; display:none;
+  font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;
+  font-size:13px; color:#f2f2f7; user-select:none;
+}}
+#pai-ctx-menu .ctx-header {{
+  padding:4px 14px 6px; font-size:11px; color:#888;
+  letter-spacing:.08em; text-transform:uppercase; border-bottom:1px solid #333;
+  margin-bottom:3px;
+}}
+#pai-ctx-menu .ctx-item {{
+  padding:6px 16px; cursor:pointer; display:flex;
+  align-items:center; gap:10px; border-radius:0;
+}}
+#pai-ctx-menu .ctx-item:hover {{ background:rgba(255,255,255,.09); }}
+#pai-ctx-menu .ctx-item .ctx-icon {{ color:#60aee8; font-size:11px; min-width:14px; }}
+#pai-ctx-menu .ctx-item .ctx-label {{ flex:1; }}
+#pai-ctx-menu .ctx-item .ctx-type {{
+  font-size:10px; color:#555; background:#2c2c2e;
+  border-radius:4px; padding:1px 5px;
+}}
+#pai-ctx-menu .ctx-sub {{
+  position:absolute; left:100%; top:0;
+  background:#1c1c1e; border-radius:12px;
+  box-shadow:0 6px 28px rgba(0,0,0,.5);
+  padding:5px 0; min-width:180px; display:none;
+  font-size:13px; color:#f2f2f7;
+}}
+#pai-ctx-menu .ctx-item:hover .ctx-sub {{ display:block; }}
+#pai-ctx-menu .ctx-sub-item {{
+  padding:6px 16px; cursor:pointer;
+}}
+#pai-ctx-menu .ctx-sub-item:hover {{ background:rgba(255,255,255,.09); }}
+</style>
+<div id="pai-ctx-menu">
+  <div class="ctx-header" id="pai-ctx-header">TAG FEATURE</div>
+</div>
+<script>
+(function(){{
+  const FEATURES = {features_js};
+  const DOC_ID   = {json.dumps(doc_id)};
+  const menu     = document.getElementById('pai-ctx-menu');
+  const header   = document.getElementById('pai-ctx-header');
+  let   selText  = '';
+
+  // ── Build menu items ────────────────────────────────────────────────────
+  FEATURES.forEach(function(fd) {{
+    const item = document.createElement('div');
+    item.className = 'ctx-item';
+    item.style.position = 'relative';
+
+    if (fd.type === 'bool') {{
+      item.innerHTML = '<span class="ctx-icon">☐</span>'
+        + '<span class="ctx-label">' + fd.name + '</span>'
+        + '<span class="ctx-type">✓/✗</span>';
+      item.addEventListener('click', function() {{
+        storeTag(fd.name, true);
+      }});
+    }} else {{
+      // Select feature — show submenu
+      item.innerHTML = '<span class="ctx-icon">◈</span>'
+        + '<span class="ctx-label">' + fd.name + '</span>'
+        + '<span class="ctx-type">▸</span>';
+      const sub = document.createElement('div');
+      sub.className = 'ctx-sub';
+      fd.opts.forEach(function(opt) {{
+        const si = document.createElement('div');
+        si.className = 'ctx-sub-item';
+        si.textContent = opt;
+        si.addEventListener('click', function(e) {{
+          e.stopPropagation();
+          storeTag(fd.name, opt);
+        }});
+        sub.appendChild(si);
+      }});
+      item.appendChild(sub);
+    }}
+    menu.appendChild(item);
+  }});
+
+  // ── Right-click handler ─────────────────────────────────────────────────
+  document.addEventListener('contextmenu', function(e) {{
+    const sel = window.getSelection();
+    selText = sel ? sel.toString().trim() : '';
+    if (!selText) return;
+    e.preventDefault();
+
+    header.textContent = 'TAG: "' + selText.slice(0, 30) + (selText.length > 30 ? '…' : '') + '"';
+    menu.style.display  = 'block';
+
+    // Position (keep inside viewport)
+    const vw = window.innerWidth, vh = window.innerHeight;
+    let x = e.clientX, y = e.clientY;
+    menu.style.left = x + 'px'; menu.style.top = y + 'px';
+    const r = menu.getBoundingClientRect();
+    if (r.right  > vw) menu.style.left = (x - r.width)  + 'px';
+    if (r.bottom > vh) menu.style.top  = (y - r.height) + 'px';
+  }});
+
+  document.addEventListener('click',   function() {{ menu.style.display = 'none'; }});
+  document.addEventListener('keydown', function(e) {{ if (e.key==='Escape') menu.style.display='none'; }});
+
+  // ── Store tag in localStorage → bridge component picks it up ───────────
+  function storeTag(featureName, value) {{
+    menu.style.display = 'none';
+    try {{
+      localStorage.setItem('pai_pending_tag', JSON.stringify({{
+        feature:   featureName,
+        value:     value,
+        docId:     DOC_ID,
+        selText:   selText,
+        timestamp: Date.now()
+      }}));
+    }} catch(e) {{}}
+  }}
+}})();
+</script>
+"""
+    if '</body>' in html_doc:
+        return html_doc.replace('</body>', script + '</body>')
+    return html_doc + script
 
 
 def extract_transcription_text(html_doc: str) -> str:
@@ -669,6 +815,31 @@ def update_gdoc_features_section(doc_id: str, sheet_vals: dict, doc_only_vals: d
     get_doc_content.clear()   # force re-fetch of the display HTML
 
 
+def find_replace_in_gdoc(doc_id: str, find_text: str, replace_text: str) -> int:
+    """
+    Apply replaceAllText in a Google Doc.  Returns the number of replacements made.
+    Raises on API error.
+    """
+    _, docs_svc, _ = get_services()
+    resp = docs_svc.documents().batchUpdate(
+        documentId=doc_id,
+        body={'requests': [{
+            'replaceAllText': {
+                'containsText': {'text': find_text, 'matchCase': True},
+                'replaceText':  replace_text,
+            }
+        }]},
+    ).execute()
+    count = (
+        resp.get('replies', [{}])[0]
+           .get('replaceAllText', {})
+           .get('occurrencesChanged', 0)
+    )
+    if count:
+        get_doc_content.clear()
+    return count
+
+
 # ════════════════════════════════════════════════════════════════════════════════
 #  SEARCH
 # ════════════════════════════════════════════════════════════════════════════════
@@ -947,48 +1118,115 @@ with st.spinner("Loading corpus index from Google Sheets…"):
         st.error(f"Could not load corpus index: {e}")
         corpus = []
 
+# ── Bridge component: listens for right-click tags from document iframes ──────
+_bridge_tag = _TAG_BRIDGE(key="tagbridge")
+if _bridge_tag:
+    doc_id   = _bridge_tag.get('docId', '')
+    feat_name = _bridge_tag.get('feature', '')
+    feat_val  = _bridge_tag.get('value')
+    fd = _FEAT_BY_NAME.get(feat_name)
+    if fd and doc_id:
+        sk = f"feat_{doc_id}"
+        if f"{sk}_pending" not in st.session_state:
+            st.session_state[f"{sk}_pending"] = {}
+        st.session_state[f"{sk}_pending"][fd[1]] = feat_val
+        st.session_state[f"{sk}_auto_expand"] = True
+        st.session_state['_bridge_tag_processed'] = True
+
 # ── Results ───────────────────────────────────────────────────────────────────
 if search_clicked and pattern_input.strip() and corpus:
     try:
         results = run_search(pattern_input.strip(), position, name_filter, corpus)
+        st.session_state['_search_results']  = results
+        st.session_state['_search_pattern']  = pattern_input.strip()
     except Exception as e:
         st.error(f"Search failed: {e}")
         results = []
-
-    if not results:
-        st.info("No matches found for this pattern.")
-    else:
-        total = sum(r['match_count'] for r in results)
-        st.markdown(f"""
-        <div class="stats-bar">
-          <span>🔍 <b>{pattern_input.strip()}</b></span>
-          <span>📄 {len(results)} document{'s' if len(results) != 1 else ''}</span>
-          <span>◌ {total} total match{'es' if total != 1 else ''}</span>
-        </div>
-        """, unsafe_allow_html=True)
-
-        for r in results:
-            meta = ' · '.join(filter(None, [r['village'], r['community'], r['gender']]))
-            label = f"📄  {r['name']}   ·   {r['match_count']} match{'es' if r['match_count'] != 1 else ''}"
-
-            with st.expander(label):
-                chips = ''.join(f'<span class="word-chip">{w}</span>' for w in r['matched_words'])
-                more  = ' <span style="color:#8899aa;font-size:0.8rem">+ more…</span>' \
-                        if r['match_count'] > len(r['matched_words']) else ''
-                st.markdown(f"""
-                <div class="doc-card-meta">
-                  <span class="badge-green">✦ {r['match_count']} matches</span>
-                  <span class="badge">{r['word_count']} words</span>
-                  <span style="color:#8899aa">{meta}</span>
-                </div>
-                <div class="word-chips">{chips}{more}</div>
-                """, unsafe_allow_html=True)
-
-                components.html(r['display_html'], height=550, scrolling=True)
-
-                # ── Feature tagging panel ───────────────────────────────────
-                if r.get('sheet_row'):
-                    _render_feature_panel(r['doc_id'], r['name'], r['sheet_row'])
-
+        st.session_state['_search_results'] = []
 elif search_clicked and not pattern_input.strip():
     st.warning("Please enter a pattern before searching.")
+
+# Always display stored results (survive rerun after bridge tag)
+results = st.session_state.get('_search_results', [])
+pattern_shown = st.session_state.get('_search_pattern', '')
+
+if results:
+    total = sum(r['match_count'] for r in results)
+    st.markdown(f"""
+    <div class="stats-bar">
+      <span>🔍 <b>{pattern_shown}</b></span>
+      <span>📄 {len(results)} document{'s' if len(results) != 1 else ''}</span>
+      <span>◌ {total} total match{'es' if total != 1 else ''}</span>
+    </div>
+    """, unsafe_allow_html=True)
+
+    for r in results:
+        meta  = ' · '.join(filter(None, [r['village'], r['community'], r['gender']]))
+        label = f"📄  {r['name']}   ·   {r['match_count']} match{'es' if r['match_count'] != 1 else ''}"
+
+        with st.expander(label):
+            chips = ''.join(f'<span class="word-chip">{w}</span>' for w in r['matched_words'])
+            more  = ' <span style="color:#8899aa;font-size:0.8rem">+ more…</span>' \
+                    if r['match_count'] > len(r['matched_words']) else ''
+            st.markdown(f"""
+            <div class="doc-card-meta">
+              <span class="badge-green">✦ {r['match_count']} matches</span>
+              <span class="badge">{r['word_count']} words</span>
+              <span style="color:#8899aa">{meta}</span>
+            </div>
+            <div class="word-chips">{chips}{more}</div>
+            """, unsafe_allow_html=True)
+
+            # Document viewer — with right-click context menu injected
+            interactive_html = inject_interaction_js(r['display_html'], r['doc_id'])
+            components.html(interactive_html, height=550, scrolling=True)
+
+            # ── Feature tagging panel ───────────────────────────────────────
+            if r.get('sheet_row'):
+                _render_feature_panel(r['doc_id'], r['name'], r['sheet_row'])
+
+            # ── Find & Replace editor ───────────────────────────────────────
+            with st.expander("✏️  Edit document text (find & replace)"):
+                st.caption(
+                    "Correct typos or transcription errors directly in the Google Doc. "
+                    "Changes are applied immediately when you click **Apply**."
+                )
+                fe_col1, fe_col2, fe_col3 = st.columns([5, 5, 2])
+                with fe_col1:
+                    find_text = st.text_input(
+                        "Find (exact, case-sensitive)",
+                        key=f"find_{r['doc_id']}",
+                        placeholder="e.g.  bidi",
+                    )
+                with fe_col2:
+                    repl_text = st.text_input(
+                        "Replace with",
+                        key=f"repl_{r['doc_id']}",
+                        placeholder="e.g.  badi",
+                    )
+                with fe_col3:
+                    st.markdown("<br>", unsafe_allow_html=True)
+                    apply_clicked = st.button(
+                        "Apply", key=f"apply_{r['doc_id']}", type="primary",
+                        use_container_width=True,
+                    )
+
+                if apply_clicked:
+                    if not find_text.strip():
+                        st.warning("Enter text to find.")
+                    elif find_text.strip() == repl_text.strip():
+                        st.warning("Find and Replace texts are identical.")
+                    else:
+                        try:
+                            n = find_replace_in_gdoc(r['doc_id'], find_text, repl_text)
+                            if n:
+                                st.success(f'✅  Replaced {n} occurrence(s) of "{find_text}" → "{repl_text}"')
+                            else:
+                                st.info(f'No occurrences of "{find_text}" found in this document.')
+                        except Exception as e:
+                            st.error(f"Edit failed: {e}")
+
+                st.markdown(
+                    f"[Open full document in Google Docs ↗](https://docs.google.com/document/d/{r['doc_id']}/edit)",
+                    unsafe_allow_html=False,
+                )
