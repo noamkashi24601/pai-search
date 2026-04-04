@@ -288,87 +288,121 @@ def inject_interaction_js(html_doc: str, doc_id: str) -> str:
     script = f"""
 <style>
 #pai-ctx-menu {{
-  position:fixed; z-index:999999; min-width:240px;
+  position:fixed; z-index:999999; min-width:250px; max-width:310px;
   background:#1c1c1e; border-radius:12px;
   box-shadow:0 8px 40px rgba(0,0,0,.6);
-  padding:5px 0; display:none;
+  padding:0; display:none;
   font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;
   font-size:13px; color:#f2f2f7; user-select:none;
+  overflow:hidden;
 }}
-#pai-ctx-menu .ctx-header {{
-  padding:4px 14px 6px; font-size:11px; color:#888;
-  letter-spacing:.08em; text-transform:uppercase; border-bottom:1px solid #333;
-  margin-bottom:3px;
+#pai-ctx-header {{
+  padding:7px 14px 6px; font-size:11px; color:#aaa;
+  letter-spacing:.08em; text-transform:uppercase;
+  border-bottom:1px solid #333; background:#1c1c1e;
+  position:sticky; top:0; z-index:2;
 }}
-#pai-ctx-menu .ctx-item {{
+#pai-ctx-scroll {{
+  max-height:min(65vh, 380px);
+  overflow-y:auto;
+  overflow-x:hidden;
+  padding:4px 0;
+  /* thin scrollbar */
+  scrollbar-width:thin;
+  scrollbar-color:#444 transparent;
+}}
+#pai-ctx-scroll::-webkit-scrollbar {{ width:4px; }}
+#pai-ctx-scroll::-webkit-scrollbar-thumb {{ background:#444; border-radius:2px; }}
+.ctx-item {{
   padding:6px 16px; cursor:pointer; display:flex;
-  align-items:center; gap:10px; border-radius:0;
+  align-items:center; gap:10px; position:relative;
 }}
-#pai-ctx-menu .ctx-item:hover {{ background:rgba(255,255,255,.09); }}
-#pai-ctx-menu .ctx-item .ctx-icon {{ color:#60aee8; font-size:11px; min-width:14px; }}
-#pai-ctx-menu .ctx-item .ctx-label {{ flex:1; }}
-#pai-ctx-menu .ctx-item .ctx-type {{
-  font-size:10px; color:#555; background:#2c2c2e;
-  border-radius:4px; padding:1px 5px;
+.ctx-item:hover {{ background:rgba(255,255,255,.09); }}
+.ctx-icon {{ color:#60aee8; font-size:11px; min-width:14px; flex-shrink:0; }}
+.ctx-label {{ flex:1; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }}
+.ctx-badge {{
+  font-size:10px; color:#666; background:#2c2c2e;
+  border-radius:4px; padding:1px 5px; flex-shrink:0;
 }}
-#pai-ctx-menu .ctx-sub {{
-  position:absolute; left:100%; top:0;
+.ctx-sub {{
+  position:fixed; left:0; top:0;
   background:#1c1c1e; border-radius:12px;
-  box-shadow:0 6px 28px rgba(0,0,0,.5);
-  padding:5px 0; min-width:180px; display:none;
-  font-size:13px; color:#f2f2f7;
+  box-shadow:0 6px 28px rgba(0,0,0,.6);
+  padding:5px 0; min-width:190px; display:none;
+  font-size:13px; color:#f2f2f7; z-index:1000000;
+  max-height:min(50vh,300px); overflow-y:auto;
+  scrollbar-width:thin; scrollbar-color:#444 transparent;
 }}
-#pai-ctx-menu .ctx-item:hover .ctx-sub {{ display:block; }}
-#pai-ctx-menu .ctx-sub-item {{
-  padding:6px 16px; cursor:pointer;
-}}
-#pai-ctx-menu .ctx-sub-item:hover {{ background:rgba(255,255,255,.09); }}
+.ctx-sub-item {{ padding:7px 16px; cursor:pointer; white-space:nowrap; }}
+.ctx-sub-item:hover {{ background:rgba(255,255,255,.09); }}
 </style>
 <div id="pai-ctx-menu">
-  <div class="ctx-header" id="pai-ctx-header">TAG FEATURE</div>
+  <div id="pai-ctx-header">TAG FEATURE</div>
+  <div id="pai-ctx-scroll"></div>
 </div>
+<div id="pai-ctx-sub" class="ctx-sub"></div>
 <script>
 (function(){{
-  const FEATURES = {features_js};
-  const DOC_ID   = {json.dumps(doc_id)};
-  const menu     = document.getElementById('pai-ctx-menu');
-  const header   = document.getElementById('pai-ctx-header');
-  let   selText  = '';
+  const FEATURES  = {features_js};
+  const DOC_ID    = {json.dumps(doc_id)};
+  const menu      = document.getElementById('pai-ctx-menu');
+  const header    = document.getElementById('pai-ctx-header');
+  const scroll    = document.getElementById('pai-ctx-scroll');
+  const subMenu   = document.getElementById('pai-ctx-sub');
+  let   selText   = '';
+  let   activeItem = null;
 
   // ── Build menu items ────────────────────────────────────────────────────
   FEATURES.forEach(function(fd) {{
     const item = document.createElement('div');
     item.className = 'ctx-item';
-    item.style.position = 'relative';
 
     if (fd.type === 'bool') {{
       item.innerHTML = '<span class="ctx-icon">☐</span>'
         + '<span class="ctx-label">' + fd.name + '</span>'
-        + '<span class="ctx-type">✓/✗</span>';
-      item.addEventListener('click', function() {{
-        storeTag(fd.name, true);
-      }});
+        + '<span class="ctx-badge">✓/✗</span>';
+      item.addEventListener('click', function() {{ storeTag(fd.name, true); }});
+      item.addEventListener('mouseenter', function() {{ hideSubMenu(); }});
     }} else {{
-      // Select feature — show submenu
       item.innerHTML = '<span class="ctx-icon">◈</span>'
         + '<span class="ctx-label">' + fd.name + '</span>'
-        + '<span class="ctx-type">▸</span>';
-      const sub = document.createElement('div');
-      sub.className = 'ctx-sub';
-      fd.opts.forEach(function(opt) {{
-        const si = document.createElement('div');
-        si.className = 'ctx-sub-item';
-        si.textContent = opt;
-        si.addEventListener('click', function(e) {{
-          e.stopPropagation();
-          storeTag(fd.name, opt);
+        + '<span class="ctx-badge">▸</span>';
+      item.addEventListener('mouseenter', function() {{
+        activeItem = item;
+        // Build submenu content
+        subMenu.innerHTML = '';
+        fd.opts.forEach(function(opt) {{
+          const si = document.createElement('div');
+          si.className = 'ctx-sub-item';
+          si.textContent = opt;
+          si.addEventListener('click', function(e) {{
+            e.stopPropagation();
+            storeTag(fd.name, opt);
+          }});
+          subMenu.appendChild(si);
         }});
-        sub.appendChild(si);
+        // Position submenu to the right of (or left of) the main menu
+        const mr = menu.getBoundingClientRect();
+        const ir = item.getBoundingClientRect();
+        const vw = window.innerWidth, vh = window.innerHeight;
+        subMenu.style.display = 'block';
+        const sr = subMenu.getBoundingClientRect();
+        let sx = mr.right + 4;
+        if (sx + sr.width > vw) sx = mr.left - sr.width - 4;
+        let sy = ir.top;
+        if (sy + sr.height > vh) sy = vh - sr.height - 8;
+        subMenu.style.left = sx + 'px';
+        subMenu.style.top  = sy + 'px';
       }});
-      item.appendChild(sub);
     }}
-    menu.appendChild(item);
+    scroll.appendChild(item);
   }});
+
+  function hideSubMenu() {{
+    subMenu.style.display = 'none';
+    subMenu.innerHTML = '';
+    activeItem = null;
+  }}
 
   // ── Right-click handler ─────────────────────────────────────────────────
   document.addEventListener('contextmenu', function(e) {{
@@ -376,21 +410,34 @@ def inject_interaction_js(html_doc: str, doc_id: str) -> str:
     selText = sel ? sel.toString().trim() : '';
     if (!selText) return;
     e.preventDefault();
+    hideSubMenu();
 
-    header.textContent = 'TAG: "' + selText.slice(0, 30) + (selText.length > 30 ? '…' : '') + '"';
-    menu.style.display  = 'block';
+    header.textContent = 'TAG: "' + selText.slice(0, 28) + (selText.length > 28 ? '…' : '') + '"';
 
-    // Position (keep inside viewport)
+    // First position at click, then adjust to keep fully inside viewport
     const vw = window.innerWidth, vh = window.innerHeight;
+    menu.style.left = '0'; menu.style.top = '0';
+    menu.style.display = 'block';
+    scroll.scrollTop = 0;
+    const mr = menu.getBoundingClientRect();
     let x = e.clientX, y = e.clientY;
-    menu.style.left = x + 'px'; menu.style.top = y + 'px';
-    const r = menu.getBoundingClientRect();
-    if (r.right  > vw) menu.style.left = (x - r.width)  + 'px';
-    if (r.bottom > vh) menu.style.top  = (y - r.height) + 'px';
+    if (x + mr.width  > vw) x = vw - mr.width  - 6;
+    if (y + mr.height > vh) y = vh - mr.height - 6;
+    if (x < 4) x = 4;
+    if (y < 4) y = 4;
+    menu.style.left = x + 'px';
+    menu.style.top  = y + 'px';
   }});
 
-  document.addEventListener('click',   function() {{ menu.style.display = 'none'; }});
-  document.addEventListener('keydown', function(e) {{ if (e.key==='Escape') menu.style.display='none'; }});
+  document.addEventListener('click', function(e) {{
+    if (!menu.contains(e.target) && !subMenu.contains(e.target)) {{
+      menu.style.display = 'none';
+      hideSubMenu();
+    }}
+  }});
+  document.addEventListener('keydown', function(e) {{
+    if (e.key === 'Escape') {{ menu.style.display = 'none'; hideSubMenu(); }}
+  }});
 
   // ── Store tag in localStorage → bridge component picks it up ───────────
   function storeTag(featureName, value) {{
