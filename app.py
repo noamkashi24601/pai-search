@@ -77,16 +77,25 @@ div[data-testid="stTextInput"] input:focus {
   background: white !important;
 }
 
-/* ── Advanced options expander: fix white-on-white ── */
+/* ── Advanced options expander ── */
 div[data-testid="stExpander"] > details {
   background: var(--sky-100) !important;
   border: 1.5px solid var(--sky-200) !important;
   border-radius: 12px !important;
 }
 div[data-testid="stExpander"] > details > summary {
+  background: var(--sky-100) !important;
   color: var(--sky-800) !important;
   font-family: 'IBM Plex Mono', monospace !important;
   font-size: 0.88rem !important;
+}
+/* Streamlit newer versions nest the label inside spans/p — force color */
+div[data-testid="stExpander"] > details > summary *,
+div[data-testid="stExpander"] > details > summary span,
+div[data-testid="stExpander"] > details > summary p,
+div[data-testid="stExpander"] > details > summary svg {
+  color: var(--sky-800) !important;
+  fill:  var(--sky-800) !important;
 }
 div[data-testid="stExpander"] > details[open] > div {
   background: var(--sky-50) !important;
@@ -1019,6 +1028,46 @@ def run_search(
     return results
 
 
+def search_by_name(query: str, corpus: list[dict]) -> list[dict]:
+    """
+    Find documents whose name (or village / community) contains the query
+    as a literal substring (case-insensitive).  Used for the 'Find document'
+    mode so users can look up identifiers like Xḏ̣.2M.R1(t) directly.
+    """
+    q = query.strip().lower()
+    matches = [
+        doc for doc in corpus
+        if q in doc['name'].lower()
+        or q in doc.get('village', '').lower()
+        or q in doc.get('community', '').lower()
+    ]
+    if not matches:
+        return []
+
+    results = []
+    bar = st.progress(0.0, text="Loading document…")
+    for i, doc in enumerate(matches):
+        bar.progress((i + 1) / max(len(matches), 1), text=f"Loading · {doc['name']}")
+        try:
+            content = get_doc_content(doc['doc_id'])
+        except Exception:
+            continue
+        results.append({
+            'name':          doc['name'],
+            'doc_id':        doc['doc_id'],
+            'sheet_row':     doc.get('sheet_row'),
+            'village':       doc['village'],
+            'community':     doc['community'],
+            'gender':        doc['gender'],
+            'match_count':   1,
+            'word_count':    len(tokenize(content['italic_text'])),
+            'matched_words': [],
+            'display_html':  content['display_html'],
+        })
+    bar.empty()
+    return results
+
+
 # ════════════════════════════════════════════════════════════════════════════════
 #  FEATURE TAGGING PANEL
 # ════════════════════════════════════════════════════════════════════════════════
@@ -1171,46 +1220,68 @@ st.markdown("""
 
 _, mid, _ = st.columns([1, 5, 1])
 with mid:
-    st.markdown("""
-    <div class="legend-row">
-      <span class="legend-pill"><b>C</b> = consonant</span>
-      <span class="legend-pill"><b>V</b> = vowel</span>
-      <span class="legend-pill"><b>D</b> = diphthong (aw/ay)</span>
-      <span class="legend-pill"><b>$</b> = any character</span>
-      <span class="legend-pill" style="background:#fff8e0;border-color:#ffe082">
-        e.g.&nbsp;<b>aCC</b>&nbsp;·&nbsp;<b>f$m</b>&nbsp;·&nbsp;<b>VCC</b>&nbsp;·&nbsp;<b>ḥVCC</b>
-      </span>
-    </div>
-    """, unsafe_allow_html=True)
-
-    pattern_input = st.text_input(
-        "Pattern",
-        placeholder="Type a pattern…   e.g.  aCC  or  f$m  or  VCCa",
+    # ── Search mode toggle ────────────────────────────────────────────────────
+    search_mode = st.radio(
+        "search_mode",
+        options=['transcription', 'document'],
+        format_func=lambda x: '🔍  Search transcriptions' if x == 'transcription' else '📄  Find document by name / ID',
+        horizontal=True,
         label_visibility="collapsed",
-        key="pattern"
+        key="search_mode",
     )
 
+    if search_mode == 'transcription':
+        st.markdown("""
+        <div class="legend-row">
+          <span class="legend-pill"><b>C</b> = consonant</span>
+          <span class="legend-pill"><b>V</b> = vowel</span>
+          <span class="legend-pill"><b>D</b> = diphthong (aw/ay)</span>
+          <span class="legend-pill"><b>$</b> = any character</span>
+          <span class="legend-pill" style="background:#fff8e0;border-color:#ffe082">
+            e.g.&nbsp;<b>aCC</b>&nbsp;·&nbsp;<b>f$m</b>&nbsp;·&nbsp;<b>VCC</b>&nbsp;·&nbsp;<b>ḥVCC</b>
+          </span>
+        </div>
+        """, unsafe_allow_html=True)
+        pattern_input = st.text_input(
+            "Pattern",
+            placeholder="Type a pattern…   e.g.  aCC  or  f$m  or  VCCa",
+            label_visibility="collapsed",
+            key="pattern"
+        )
+    else:
+        pattern_input = st.text_input(
+            "Document name or ID",
+            placeholder="Type document name or ID…   e.g.  Xḏ̣.2M.R1(t)  or  Galilee",
+            label_visibility="collapsed",
+            key="pattern"
+        )
+
     with st.expander("⚙️  Advanced options"):
-        st.markdown("**Pattern position within word**")
-        position = st.radio(
-            "position",
-            options=['anywhere', 'start', 'middle', 'end'],
-            horizontal=True,
-            label_visibility="collapsed",
-            format_func=lambda x: {
-                'anywhere': '🔀  Anywhere',
-                'start':    '◀  Start of word',
-                'middle':   '◼  Middle of word',
-                'end':      '▶  End of word',
-            }[x],
-        )
-        st.markdown("**Filter documents by name / village / community**")
-        name_filter = st.text_input(
-            "name_filter",
-            placeholder="e.g.  Br  or  Galilee  or  Christian  (leave blank for all)",
-            label_visibility="collapsed",
-            key="name_filter"
-        )
+        if search_mode == 'transcription':
+            st.markdown("**Pattern position within word**")
+            position = st.radio(
+                "position",
+                options=['anywhere', 'start', 'middle', 'end'],
+                horizontal=True,
+                label_visibility="collapsed",
+                format_func=lambda x: {
+                    'anywhere': '🔀  Anywhere',
+                    'start':    '◀  Start of word',
+                    'middle':   '◼  Middle of word',
+                    'end':      '▶  End of word',
+                }[x],
+            )
+            st.markdown("**Filter documents by name / village / community**")
+            name_filter = st.text_input(
+                "name_filter",
+                placeholder="e.g.  Br  or  Galilee  or  Christian  (leave blank for all)",
+                label_visibility="collapsed",
+                key="name_filter"
+            )
+        else:
+            st.info("In document search mode the query is matched literally (no regex) against document names and metadata.", icon="ℹ️")
+            position    = 'anywhere'
+            name_filter = ''
 
 
     col_s, col_c = st.columns([5, 1])
@@ -1274,9 +1345,15 @@ if '_ctx_edit_result' in st.session_state:
 # ── Results ───────────────────────────────────────────────────────────────────
 if search_clicked and pattern_input.strip() and corpus:
     try:
-        results = run_search(pattern_input.strip(), position, name_filter, corpus)
+        if search_mode == 'document':
+            results = search_by_name(pattern_input.strip(), corpus)
+            if not results:
+                st.warning(f'No documents found matching "{pattern_input.strip()}".')
+        else:
+            results = run_search(pattern_input.strip(), position, name_filter, corpus)
         st.session_state['_search_results']  = results
         st.session_state['_search_pattern']  = pattern_input.strip()
+        st.session_state['_search_mode']     = search_mode
     except Exception as e:
         st.error(f"Search failed: {e}")
         results = []
@@ -1285,18 +1362,28 @@ elif search_clicked and not pattern_input.strip():
     st.warning("Please enter a pattern before searching.")
 
 # Always display stored results (survive rerun after bridge tag)
-results = st.session_state.get('_search_results', [])
+results       = st.session_state.get('_search_results', [])
 pattern_shown = st.session_state.get('_search_pattern', '')
+mode_shown    = st.session_state.get('_search_mode', 'transcription')
 
 if results:
     total = sum(r['match_count'] for r in results)
-    st.markdown(f"""
-    <div class="stats-bar">
-      <span>🔍 <b>{pattern_shown}</b></span>
-      <span>📄 {len(results)} document{'s' if len(results) != 1 else ''}</span>
-      <span>◌ {total} total match{'es' if total != 1 else ''}</span>
-    </div>
-    """, unsafe_allow_html=True)
+    if mode_shown == 'document':
+        stats_label = f"📄 {len(results)} document{'s' if len(results) != 1 else ''} matched"
+        st.markdown(f"""
+        <div class="stats-bar">
+          <span>📄 <b>{pattern_shown}</b></span>
+          <span>{len(results)} document{'s' if len(results) != 1 else ''} found</span>
+        </div>
+        """, unsafe_allow_html=True)
+    else:
+        st.markdown(f"""
+        <div class="stats-bar">
+          <span>🔍 <b>{pattern_shown}</b></span>
+          <span>📄 {len(results)} document{'s' if len(results) != 1 else ''}</span>
+          <span>◌ {total} total match{'es' if total != 1 else ''}</span>
+        </div>
+        """, unsafe_allow_html=True)
 
     for r in results:
         meta  = ' · '.join(filter(None, [r['village'], r['community'], r['gender']]))
