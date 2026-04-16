@@ -1385,7 +1385,12 @@ if results:
         </div>
         """, unsafe_allow_html=True)
 
+    seen_doc_ids = set()
     for r in results:
+        if r['doc_id'] in seen_doc_ids:
+            continue          # skip duplicate doc_ids (same Google Doc listed twice in sheet)
+        seen_doc_ids.add(r['doc_id'])
+
         meta  = ' · '.join(filter(None, [r['village'], r['community'], r['gender']]))
         label = f"📄  {r['name']}   ·   {r['match_count']} match{'es' if r['match_count'] != 1 else ''}"
 
