@@ -283,10 +283,14 @@ def highlight_in_exported_html(html_doc: str, rx: re.Pattern) -> str:
     return ''.join(result)
 
 
-def inject_interaction_js(html_doc: str, doc_id: str) -> str:
+_STRIP_MARK = re.compile(r'</?mark[^>]*>')
+
+
+def inject_interaction_js(html_doc: str, doc_id: str, nav_words: list = None) -> str:
     """
     Inject right-click context menu and edit-mode support into a Google Docs
     HTML export before it is rendered in the iframe.
+    nav_words: plain-text list of matched words to show as clickable scroll chips.
     """
     # Serialize feature list for JavaScript
     features_js = json.dumps([
@@ -294,8 +298,29 @@ def inject_interaction_js(html_doc: str, doc_id: str) -> str:
         for fd in FEATURE_DEFS
     ])
 
+    nav_words_js = json.dumps(nav_words or [])
+
     script = f"""
 <style>
+/* ── Match navigation chip strip ── */
+#pai-chip-strip {{
+  position:sticky; top:0; z-index:200;
+  background:rgba(240,248,255,.97); padding:5px 10px;
+  border-bottom:1px solid #b8deff;
+  display:flex; flex-wrap:wrap; gap:5px; align-items:center;
+  backdrop-filter:blur(4px);
+}}
+.pai-cs-label {{ font-size:11px; color:#60aee8; letter-spacing:.05em; }}
+.pai-nav-chip {{
+  background:#daeeff; border:1px solid #60aee8; border-radius:8px;
+  padding:3px 11px; font-family:'IBM Plex Mono',monospace; font-size:13px;
+  cursor:pointer; color:#0d3f75; transition:background .15s; user-select:none;
+}}
+.pai-nav-chip:hover {{ background:#b8deff; }}
+#pai-mark-pos {{ font-size:11px; color:#999; margin-left:auto; }}
+mark {{ background:#b6f2c8; border-radius:2px; padding:0 1px; }}
+mark.pai-hl {{ outline:2px solid #2075c7; border-radius:2px; background:#7ee8a2; }}
+/* ── Context menu ── */
 #pai-ctx-menu {{
   position:fixed; z-index:999999; min-width:250px; max-width:310px;
   max-height:min(78vh, 500px);
@@ -527,6 +552,46 @@ def inject_interaction_js(html_doc: str, doc_id: str) -> str:
     }} catch(e) {{}}
   }}
 }})();
+
+// ── Word chip navigation ────────────────────────────────────────────────────
+(function() {{
+  var NAV_WORDS = {nav_words_js};
+  if (!NAV_WORDS || NAV_WORDS.length === 0) return;
+
+  // Build chip strip
+  var strip = document.createElement('div');
+  strip.id = 'pai-chip-strip';
+  var html = '<span class="pai-cs-label">jump to match&nbsp;↓&nbsp;</span>';
+  NAV_WORDS.forEach(function(w) {{
+    html += '<button class="pai-nav-chip" onclick="paiNavMark()">' + w + '</button>';
+  }});
+  html += '<span id="pai-mark-pos"></span>';
+  strip.innerHTML = html;
+
+  function insertStrip() {{
+    if (document.body) document.body.insertAdjacentElement('afterbegin', strip);
+    _initMarks();
+  }}
+  if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', insertStrip);
+  else insertStrip();
+}})();
+
+var _paiMarks = [], _paiIdx = 0, _paiLastHL = null;
+function _initMarks() {{
+  _paiMarks = Array.from(document.querySelectorAll('mark'));
+}}
+function paiNavMark() {{
+  if (_paiMarks.length === 0) _initMarks();
+  if (_paiMarks.length === 0) return;
+  if (_paiLastHL) _paiLastHL.classList.remove('pai-hl');
+  var m = _paiMarks[_paiIdx];
+  m.classList.add('pai-hl');
+  m.scrollIntoView({{behavior:'smooth', block:'center'}});
+  _paiLastHL = m;
+  _paiIdx = (_paiIdx + 1) % _paiMarks.length;
+  var pos = document.getElementById('pai-mark-pos');
+  if (pos) pos.textContent = _paiIdx + '/' + _paiMarks.length;
+}}
 </script>
 """
     if '</body>' in html_doc:
@@ -815,10 +880,12 @@ def write_sheet_features(sheet_row: int, changes: dict[str, object]) -> list[str
     current = get_sheet_features(sheet_row)
     conflicts = []
 
-    # Detect conflicts: existing non-null value that differs from the proposed change
+    # Detect conflicts: only flag if there is already a real (non-empty) value
+    # that differs from the new tag.  False / None / 0 / '' = empty cell, not a conflict.
     for col_letter, new_val in changes.items():
         cur_val = current.get(col_letter)
-        if cur_val is not None and cur_val != new_val:
+        cell_is_empty = cur_val is None or cur_val is False or cur_val == '' or cur_val == 0
+        if not cell_is_empty and cur_val != new_val:
             fd = next((f for f in FEATURE_DEFS if f[1] == col_letter), None)
             name = fd[2] if fd else col_letter
             conflicts.append(
@@ -1072,151 +1139,132 @@ def search_by_name(query: str, corpus: list[dict]) -> list[dict]:
 #  FEATURE TAGGING PANEL
 # ════════════════════════════════════════════════════════════════════════════════
 
-def _render_feature_panel(doc_id: str, doc_name: str, sheet_rows: list):
+def _render_submit_bar(doc_id: str, doc_name: str, sheet_rows: list):
     """
-    Renders the feature tagging expander below a document viewer.
-    sheet_rows is a list of all Recordings sheet rows that share this doc_id
-    (some recordings are split into 2 parts with separate rows).
-    Loads current values from Google Sheets, lets the user edit them,
-    and on Submit writes back to the sheet and updates the Google Doc.
+    Slim submit bar shown below the document viewer when the user has staged
+    feature tags via right-click.  No checkbox grid — all tagging is via
+    the right-click context menu in the document iframe.
     """
-    sk = f"feat_{doc_id}"   # unique session-state namespace for this doc
+    sk = f"feat_{doc_id}"
 
-    with st.expander("✏️  Tag features for this document", expanded=False):
-        st.caption(
-            f"Changes are written to the **Recordings** sheet row {sheet_row} "
-            f"(columns M–AI) and to the Google Doc's FEATURES section. "
-            f"Right-click the transcript above to copy a word, then record the feature below."
-        )
+    # Initialise session-state slots
+    if f"{sk}_pending" not in st.session_state:
+        st.session_state[f"{sk}_pending"] = {}
+    if f"{sk}_doc_only" not in st.session_state:
+        st.session_state[f"{sk}_doc_only"] = {}
 
-        # Load current sheet values from the first row (both rows share the same features)
-        try:
-            current = get_sheet_features(sheet_rows[0])
-        except Exception as e:
-            st.error(f"Could not load spreadsheet values: {e}")
-            return
+    pending  = st.session_state[f"{sk}_pending"]
+    doc_only = st.session_state[f"{sk}_doc_only"]
 
-        # Session-state keys for pending edits
-        if f"{sk}_pending" not in st.session_state:
-            st.session_state[f"{sk}_pending"] = {}   # {col_letter: new_value}
-        if f"{sk}_doc_only" not in st.session_state:
-            st.session_state[f"{sk}_doc_only"] = {}  # {feature_name: value}
-
-        pending   = st.session_state[f"{sk}_pending"]
-        doc_only  = st.session_state[f"{sk}_doc_only"]
-
-        st.markdown("#### Spreadsheet features (M–AI)")
-        # Render in 2-column grid
-        col_pairs = list(zip(FEATURE_DEFS[::2], FEATURE_DEFS[1::2]))
-        if len(FEATURE_DEFS) % 2:
-            col_pairs.append((FEATURE_DEFS[-1], None))
-
-        for fd_left, fd_right in col_pairs:
-            c1, c2 = st.columns(2)
-            for col, fd in [(c1, fd_left), (c2, fd_right)]:
-                if fd is None:
-                    continue
-                col_l, name, ftype, opts = fd[1], fd[2], fd[3], fd[4]
-                cur_val = pending.get(col_l, current.get(col_l))
-                widget_key = f"{sk}_{col_l}"
-
-                with col:
-                    if ftype == 'bool':
-                        new_val = st.checkbox(
-                            name, value=bool(cur_val), key=widget_key,
-                        )
-                    else:
-                        choices = ['(not set)'] + (opts or [])
-                        cur_idx = (choices.index(cur_val)
-                                   if cur_val in choices else 0)
-                        sel = st.selectbox(
-                            name, choices, index=cur_idx, key=widget_key,
-                        )
-                        new_val = None if sel == '(not set)' else sel
-
-                    # Track change vs. original sheet value
-                    orig = current.get(col_l)
-                    if new_val != orig:
-                        pending[col_l] = new_val
-                    elif col_l in pending and pending[col_l] == orig:
-                        del pending[col_l]
-
-        st.markdown("#### Document-only features")
-        for name in DOC_ONLY_FEATURES:
-            cur_val = doc_only.get(name)
-            new_val = st.checkbox(name, value=bool(cur_val),
-                                  key=f"{sk}_donly_{name}")
-            doc_only[name] = new_val
-
-        # ── Submit button ─────────────────────────────────────────────────
-        has_changes = bool(pending) or any(doc_only.values())
-        if has_changes:
-            n_changes = len(pending) + sum(1 for v in doc_only.values() if v)
-            if st.button(
-                f"💾  Submit {n_changes} change(s) for **{doc_name}**",
-                key=f"{sk}_submit", type="primary",
-            ):
-                st.session_state[f"{sk}_confirm"] = True
-
-        if st.session_state.get(f"{sk}_confirm"):
-            rows_label = f"{len(sheet_rows)} spreadsheet rows" if len(sheet_rows) > 1 else "1 spreadsheet row"
-            st.warning(
-                f"⚠️  You are about to write **{len(pending)}** feature change(s) "
-                f"to **{rows_label}** and update the Google Doc for **{doc_name}**. "
-                f"This cannot be undone. Proceed?"
+    # ── Doc-only feature checkboxes (not in spreadsheet) ───────────────────
+    st.markdown(
+        "<span style='font-size:12px;color:#60aee8;letter-spacing:.07em;"
+        "text-transform:uppercase'>Document-only features</span>",
+        unsafe_allow_html=True,
+    )
+    donly_cols = st.columns(3)
+    for i, name in enumerate(DOC_ONLY_FEATURES):
+        with donly_cols[i % 3]:
+            doc_only[name] = st.checkbox(
+                name, value=bool(doc_only.get(name)), key=f"{sk}_donly_{name}"
             )
-            yes_col, no_col = st.columns(2)
-            with yes_col:
-                if st.button("✅  Yes, submit", key=f"{sk}_yes"):
-                    # 1. Write to Google Sheets — all rows that share this doc_id
-                    conflicts = []
-                    if pending:
-                        try:
-                            # Check conflicts on first row (both rows share same data)
-                            conflicts = write_sheet_features(sheet_rows[0], pending)
-                        except Exception as e:
-                            st.error(f"Spreadsheet write failed: {e}")
-                            st.session_state[f"{sk}_confirm"] = False
-                            return
 
-                    if conflicts:
-                        st.error(
-                            "⚠️  Some values already exist in the spreadsheet "
-                            "and differ from your tagging — **not written**:\n\n"
-                            + "\n".join(f"- {c}" for c in conflicts)
-                        )
-                        st.session_state[f"{sk}_confirm"] = False
-                        return
+    has_changes = bool(pending) or any(doc_only.values())
+    if not has_changes:
+        st.caption("Right-click words in the transcript above to tag features.")
+        return
 
-                    # Write remaining rows (if recording is split into parts)
-                    if pending and len(sheet_rows) > 1:
-                        for extra_row in sheet_rows[1:]:
-                            try:
-                                write_sheet_features(extra_row, pending)
-                            except Exception as e:
-                                st.error(f"Spreadsheet write failed for row {extra_row}: {e}")
+    # ── Summary of staged tags ─────────────────────────────────────────────
+    n = len(pending) + sum(1 for v in doc_only.values() if v)
+    tag_summaries = []
+    for col_l, val in pending.items():
+        fd = next((f for f in FEATURE_DEFS if f[1] == col_l), None)
+        tag_summaries.append(f"`{fd[2] if fd else col_l}` = **{val}**")
+    for name, val in doc_only.items():
+        if val:
+            tag_summaries.append(f"`{name}` = **✓**")
 
-                    # 2. Update Google Doc FEATURES section
+    st.markdown(
+        f"🏷️ **{n} feature(s) staged:** " + "  ·  ".join(tag_summaries)
+    )
+
+    btn_col, clr_col = st.columns([4, 1])
+    with btn_col:
+        if st.button(
+            f"💾  Submit {n} feature(s)",
+            key=f"{sk}_submit_bar", type="primary", use_container_width=True,
+        ):
+            st.session_state[f"{sk}_confirm"] = True
+    with clr_col:
+        if st.button("✕ Clear", key=f"{sk}_clear_bar", use_container_width=True):
+            st.session_state[f"{sk}_pending"] = {}
+            st.session_state[f"{sk}_doc_only"] = {}
+            st.rerun()
+
+    if st.session_state.get(f"{sk}_confirm"):
+        rows_label = (
+            f"{len(sheet_rows)} spreadsheet rows"
+            if len(sheet_rows) > 1 else "1 spreadsheet row"
+        )
+        st.warning(
+            f"⚠️  Writing **{len(pending)}** feature(s) to **{rows_label}** "
+            f"and updating the Google Doc for **{doc_name}**. Cannot be undone."
+        )
+        yes_col, no_col = st.columns(2)
+        with yes_col:
+            if st.button("✅  Yes, submit", key=f"{sk}_yes"):
+                # Load current values for conflict check
+                try:
+                    current = get_sheet_features(sheet_rows[0])
+                except Exception as e:
+                    st.error(f"Could not read spreadsheet: {e}")
+                    st.session_state[f"{sk}_confirm"] = False
+                    return
+
+                conflicts = []
+                if pending:
                     try:
-                        # Merge sheet values: original + accepted changes
-                        merged_sheet = {**current, **pending}
-                        update_gdoc_features_section(doc_id, merged_sheet, doc_only)
+                        conflicts = write_sheet_features(sheet_rows[0], pending)
                     except Exception as e:
-                        st.error(f"Google Doc update failed: {e}")
+                        st.error(f"Spreadsheet write failed: {e}")
                         st.session_state[f"{sk}_confirm"] = False
                         return
 
-                    # 3. Clear pending state
-                    st.session_state[f"{sk}_pending"] = {}
-                    st.session_state[f"{sk}_doc_only"] = {}
+                if conflicts:
+                    st.error(
+                        "⚠️  Existing values differ from your tags — **not written**:\n\n"
+                        + "\n".join(f"- {c}" for c in conflicts)
+                    )
                     st.session_state[f"{sk}_confirm"] = False
-                    st.success(f"✅  Features saved for **{doc_name}**!")
-                    st.rerun()
+                    return
 
-            with no_col:
-                if st.button("❌  Cancel", key=f"{sk}_no"):
+                # Write to remaining rows (split recordings)
+                if pending and len(sheet_rows) > 1:
+                    for extra_row in sheet_rows[1:]:
+                        try:
+                            write_sheet_features(extra_row, pending)
+                        except Exception as e:
+                            st.error(f"Row {extra_row} write failed: {e}")
+
+                # Update Google Doc FEATURES section
+                try:
+                    merged_sheet = {**current, **pending}
+                    update_gdoc_features_section(doc_id, merged_sheet, doc_only)
+                except Exception as e:
+                    st.error(f"Google Doc update failed: {e}")
                     st.session_state[f"{sk}_confirm"] = False
-                    st.rerun()
+                    return
+
+                st.session_state[f"{sk}_pending"] = {}
+                st.session_state[f"{sk}_doc_only"] = {}
+                st.session_state[f"{sk}_confirm"] = False
+                st.success(f"✅  Features saved for **{doc_name}**!")
+                st.rerun()
+
+        with no_col:
+            if st.button("❌  Cancel", key=f"{sk}_no"):
+                st.session_state[f"{sk}_confirm"] = False
+                st.rerun()
 
 
 # ════════════════════════════════════════════════════════════════════════════════
@@ -1412,69 +1460,30 @@ if results:
         label = f"📄  {r['name']}   ·   {r['match_count']} match{'es' if r['match_count'] != 1 else ''}"
 
         with st.expander(label):
-            chips = ''.join(f'<span class="word-chip">{w}</span>' for w in r['matched_words'])
-            more  = ' <span style="color:#8899aa;font-size:0.8rem">+ more…</span>' \
-                    if r['match_count'] > len(r['matched_words']) else ''
             st.markdown(f"""
             <div class="doc-card-meta">
               <span class="badge-green">✦ {r['match_count']} matches</span>
               <span class="badge">{r['word_count']} words</span>
               <span style="color:#8899aa">{meta}</span>
             </div>
-            <div class="word-chips">{chips}{more}</div>
             """, unsafe_allow_html=True)
 
-            # Document viewer — with right-click context menu injected
-            interactive_html = inject_interaction_js(r['display_html'], r['doc_id'])
-            components.html(interactive_html, height=550, scrolling=True)
+            # Word chips are now rendered as a sticky nav strip INSIDE the iframe.
+            # Strip <mark> tags to get plain word text for the chip buttons.
+            nav_words = list(dict.fromkeys(
+                _STRIP_MARK.sub('', w) for w in r['matched_words']
+            )) if r['matched_words'] else []
 
-            # ── Feature tagging panel ───────────────────────────────────────
+            # Document viewer — with right-click context menu + chip nav injected
+            interactive_html = inject_interaction_js(r['display_html'], r['doc_id'], nav_words)
+            components.html(interactive_html, height=580, scrolling=True)
+
+            # ── Submit bar (feature tags staged via right-click) ────────────
             all_rows = doc_id_to_rows.get(r['doc_id'], [r['sheet_row']] if r.get('sheet_row') else [])
             if all_rows:
-                _render_feature_panel(r['doc_id'], r['name'], all_rows)
+                _render_submit_bar(r['doc_id'], r['name'], all_rows)
 
-            # ── Find & Replace editor ───────────────────────────────────────
-            with st.expander("✏️  Edit document text (find & replace)"):
-                st.caption(
-                    "Correct typos or transcription errors directly in the Google Doc. "
-                    "Changes are applied immediately when you click **Apply**."
-                )
-                fe_col1, fe_col2, fe_col3 = st.columns([5, 5, 2])
-                with fe_col1:
-                    find_text = st.text_input(
-                        "Find (exact, case-sensitive)",
-                        key=f"find_{r['doc_id']}",
-                        placeholder="e.g.  bidi",
-                    )
-                with fe_col2:
-                    repl_text = st.text_input(
-                        "Replace with",
-                        key=f"repl_{r['doc_id']}",
-                        placeholder="e.g.  badi",
-                    )
-                with fe_col3:
-                    st.markdown("<br>", unsafe_allow_html=True)
-                    apply_clicked = st.button(
-                        "Apply", key=f"apply_{r['doc_id']}", type="primary",
-                        use_container_width=True,
-                    )
-
-                if apply_clicked:
-                    if not find_text.strip():
-                        st.warning("Enter text to find.")
-                    elif find_text.strip() == repl_text.strip():
-                        st.warning("Find and Replace texts are identical.")
-                    else:
-                        try:
-                            n = find_replace_in_gdoc(r['doc_id'], find_text, repl_text)
-                            if n:
-                                st.success(f'✅  Replaced {n} occurrence(s) of "{find_text}" → "{repl_text}"')
-                            else:
-                                st.info(f'No occurrences of "{find_text}" found in this document.')
-                        except Exception as e:
-                            st.error(f"Edit failed: {e}")
-
-                st.markdown(
-                    f"[Open full document in Google Docs ↗](https://docs.google.com/document/d/{r['doc_id']}/edit)",
-                    unsafe_allow_html=False,
-                )
+            st.markdown(
+                f"[Open in Google Docs ↗](https://docs.google.com/document/d/{r['doc_id']}/edit)",
+                unsafe_allow_html=False,
+            )
