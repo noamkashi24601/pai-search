@@ -1072,9 +1072,11 @@ def search_by_name(query: str, corpus: list[dict]) -> list[dict]:
 #  FEATURE TAGGING PANEL
 # ════════════════════════════════════════════════════════════════════════════════
 
-def _render_feature_panel(doc_id: str, doc_name: str, sheet_row: int):
+def _render_feature_panel(doc_id: str, doc_name: str, sheet_rows: list):
     """
     Renders the feature tagging expander below a document viewer.
+    sheet_rows is a list of all Recordings sheet rows that share this doc_id
+    (some recordings are split into 2 parts with separate rows).
     Loads current values from Google Sheets, lets the user edit them,
     and on Submit writes back to the sheet and updates the Google Doc.
     """
@@ -1087,9 +1089,9 @@ def _render_feature_panel(doc_id: str, doc_name: str, sheet_row: int):
             f"Right-click the transcript above to copy a word, then record the feature below."
         )
 
-        # Load current sheet values (cached)
+        # Load current sheet values from the first row (both rows share the same features)
         try:
-            current = get_sheet_features(sheet_row)
+            current = get_sheet_features(sheet_rows[0])
         except Exception as e:
             st.error(f"Could not load spreadsheet values: {e}")
             return
@@ -1157,19 +1159,21 @@ def _render_feature_panel(doc_id: str, doc_name: str, sheet_row: int):
                 st.session_state[f"{sk}_confirm"] = True
 
         if st.session_state.get(f"{sk}_confirm"):
+            rows_label = f"{len(sheet_rows)} spreadsheet rows" if len(sheet_rows) > 1 else "1 spreadsheet row"
             st.warning(
-                f"⚠️  You are about to write **{len(pending)}** spreadsheet "
-                f"change(s) and update the Google Doc for **{doc_name}**. "
+                f"⚠️  You are about to write **{len(pending)}** feature change(s) "
+                f"to **{rows_label}** and update the Google Doc for **{doc_name}**. "
                 f"This cannot be undone. Proceed?"
             )
             yes_col, no_col = st.columns(2)
             with yes_col:
                 if st.button("✅  Yes, submit", key=f"{sk}_yes"):
-                    # 1. Write to Google Sheets
+                    # 1. Write to Google Sheets — all rows that share this doc_id
                     conflicts = []
                     if pending:
                         try:
-                            conflicts = write_sheet_features(sheet_row, pending)
+                            # Check conflicts on first row (both rows share same data)
+                            conflicts = write_sheet_features(sheet_rows[0], pending)
                         except Exception as e:
                             st.error(f"Spreadsheet write failed: {e}")
                             st.session_state[f"{sk}_confirm"] = False
@@ -1183,6 +1187,14 @@ def _render_feature_panel(doc_id: str, doc_name: str, sheet_row: int):
                         )
                         st.session_state[f"{sk}_confirm"] = False
                         return
+
+                    # Write remaining rows (if recording is split into parts)
+                    if pending and len(sheet_rows) > 1:
+                        for extra_row in sheet_rows[1:]:
+                            try:
+                                write_sheet_features(extra_row, pending)
+                            except Exception as e:
+                                st.error(f"Spreadsheet write failed for row {extra_row}: {e}")
 
                     # 2. Update Google Doc FEATURES section
                     try:
@@ -1385,6 +1397,11 @@ if results:
         </div>
         """, unsafe_allow_html=True)
 
+    # Map doc_id → all sheet rows (handles recordings split across multiple rows)
+    doc_id_to_rows: dict = {}
+    for doc in corpus:
+        doc_id_to_rows.setdefault(doc['doc_id'], []).append(doc['sheet_row'])
+
     seen_doc_ids = set()
     for r in results:
         if r['doc_id'] in seen_doc_ids:
@@ -1412,8 +1429,9 @@ if results:
             components.html(interactive_html, height=550, scrolling=True)
 
             # ── Feature tagging panel ───────────────────────────────────────
-            if r.get('sheet_row'):
-                _render_feature_panel(r['doc_id'], r['name'], r['sheet_row'])
+            all_rows = doc_id_to_rows.get(r['doc_id'], [r['sheet_row']] if r.get('sheet_row') else [])
+            if all_rows:
+                _render_feature_panel(r['doc_id'], r['name'], all_rows)
 
             # ── Find & Replace editor ───────────────────────────────────────
             with st.expander("✏️  Edit document text (find & replace)"):
