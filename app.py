@@ -786,6 +786,25 @@ COL_TRANS_LINK = 43   # קישורים לתעתיקים — Google Doc link
 COL_VILLAGE    = 1    # שם יישוב בתעתיק
 COL_COMMUNITY  = 4    # קהילה
 COL_GENDER     = 8    # מגדר דובר
+COL_STATUS     = 37   # סטטוס — AL
+
+# ── Status badge colours (mirrors Google Sheets conditional formatting) ────────
+STATUS_COLORS: dict[str, tuple[str, str]] = {
+    'אושר (אורי)':    ('#1b5e20', '#ffffff'),   # dark green
+    'עבר הגהה':       ('#558b2f', '#ffffff'),   # olive green
+    'עבר תעתיק':      ('#f57f17', '#ffffff'),   # amber
+    'מאושר לתעתיק':   ('#0277bd', '#ffffff'),   # blue
+    'בטיפול':         ('#b71c1c', '#ffffff'),   # red
+}
+
+def _status_badge(status: str) -> str:
+    bg, fg = STATUS_COLORS.get(status, ('#78909c', '#ffffff'))
+    return (
+        f'<span style="background:{bg};color:{fg};padding:3px 12px;'
+        f'border-radius:999px;font-size:0.8rem;font-weight:700;'
+        f'font-family:Heebo,Arial,sans-serif;direction:rtl;'
+        f'display:inline-block;line-height:1.6">{status}</span>'
+    )
 
 # ── Feature column definitions: (1-based col, col_letter, display_name, type, options) ──
 # type: 'bool' = checkbox  |  'select' = fixed options  |  'text' = free text
@@ -900,6 +919,7 @@ def load_corpus_index() -> list[dict]:
             'village':    cell_val(COL_VILLAGE)   or '',
             'community':  cell_val(COL_COMMUNITY) or '',
             'gender':     cell_val(COL_GENDER)    or '',
+            'status':     cell_val(COL_STATUS)    or '',
             'sheet_row':  grid_row_idx,   # 1-based row number in the Recordings sheet
         })
 
@@ -1179,6 +1199,7 @@ def run_search(
                 'village':       doc['village'],
                 'community':     doc['community'],
                 'gender':        doc['gender'],
+                'status':        doc.get('status', ''),
                 'match_count':   match_count,
                 'word_count':    len(tokenize(search_text)),
                 'matched_words': matched_words[:15],
@@ -1221,6 +1242,7 @@ def search_by_name(query: str, corpus: list[dict]) -> list[dict]:
             'village':       doc['village'],
             'community':     doc['community'],
             'gender':        doc['gender'],
+            'status':        doc.get('status', ''),
             'match_count':   1,
             'word_count':    len(tokenize(content['italic_text'])),
             'matched_words': [],
@@ -1557,6 +1579,26 @@ if results:
 
         meta  = ' · '.join(filter(None, [r['village'], r['community'], r['gender']]))
         label = f"📄  {r['name']}   ·   {r['match_count']} match{'es' if r['match_count'] != 1 else ''}"
+
+        # ── Preview strip (visible without opening the expander) ───────────────
+        status_html = _status_badge(r['status']) if r.get('status') else ''
+        preview_words = list(dict.fromkeys(
+            _STRIP_MARK.sub('', w) for w in r['matched_words']
+        )) if r.get('matched_words') else []
+        chips_html = ''.join(
+            f'<span style="background:#e8f5e9;border:1px solid #a5d6a7;border-radius:7px;'
+            f'padding:2px 9px;font-family:IBM Plex Mono,monospace;font-size:0.82rem;'
+            f'color:#1b5e20;font-weight:600">{w}</span>'
+            for w in preview_words[:12]
+        )
+        if chips_html and len(preview_words) > 12:
+            chips_html += f'<span style="color:#8899aa;font-size:0.78rem"> +{len(preview_words)-12} more</span>'
+        st.markdown(
+            f'<div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;'
+            f'padding:5px 10px 4px 10px;margin-bottom:-6px">'
+            f'{status_html}{chips_html}</div>',
+            unsafe_allow_html=True,
+        )
 
         with st.expander(label):
             st.markdown(f"""
