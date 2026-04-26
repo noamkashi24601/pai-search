@@ -278,13 +278,33 @@ def _is_transcription_para(para_html: str) -> bool:
     return bool(_TURN_MARKER_HL.match(text) or text[:1].isdigit())
 
 def _highlight_text_nodes(fragment: str, rx: re.Pattern) -> str:
-    """Highlight regex matches inside text nodes only (not inside HTML tags)."""
+    """
+    Highlight regex matches inside text nodes only (not inside HTML tags).
+    Unescapes HTML entities and NFC-normalises each text node before matching,
+    so characters like š / ī / ḥ are found regardless of how Google Docs
+    encoded them in the export (entities, NFD decomposed, etc.).
+    """
     parts = re.split(r'(<[^>]+>)', fragment)
-    return ''.join(
-        part if part.startswith('<')
-        else rx.sub(lambda m: f'<mark style="{_MARK_STYLE}">{m.group()}</mark>', part)
-        for part in parts
-    )
+    out = []
+    for part in parts:
+        if part.startswith('<'):
+            out.append(part)
+        else:
+            # Unescape HTML entities and normalise to NFC before regex search
+            text = unicodedata.normalize('NFC', html_lib.unescape(part))
+            result = []
+            last = 0
+            for m in rx.finditer(text):
+                # Non-matched portion: re-escape HTML special chars
+                result.append(html_lib.escape(text[last:m.start()]))
+                # Matched portion: wrap in <mark>
+                result.append(
+                    f'<mark style="{_MARK_STYLE}">{html_lib.escape(m.group())}</mark>'
+                )
+                last = m.end()
+            result.append(html_lib.escape(text[last:]))
+            out.append(''.join(result))
+    return ''.join(out)
 
 def highlight_in_exported_html(html_doc: str, rx: re.Pattern) -> str:
     """
