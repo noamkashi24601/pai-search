@@ -1458,33 +1458,38 @@ with st.spinner("Loading corpus index from Google Sheets…"):
 # ── Bridge component: listens for right-click tags from document iframes ──────
 _bridge_tag = _TAG_BRIDGE(key="tagbridge")
 if _bridge_tag:
-    _bt_type = _bridge_tag.get('type', '')
-    doc_id   = _bridge_tag.get('docId', '')
-
-    if _bt_type == 'edit':
-        # ── Inline find-and-replace from context menu ──────────────────────────
-        find_text = _bridge_tag.get('find', '').strip()
-        repl_text = _bridge_tag.get('replace', '').strip()
-        if find_text and repl_text and doc_id:
-            try:
-                n = find_replace_in_gdoc(doc_id, find_text, repl_text)
-                st.session_state['_ctx_edit_result'] = (find_text, repl_text, n, None)
-            except Exception as e:
-                st.session_state['_ctx_edit_result'] = (find_text, repl_text, 0, str(e))
-        st.session_state['_bridge_tag_processed'] = True
-
+    _bt_ts = _bridge_tag.get('timestamp', 0)
+    # Skip if we already processed this exact tag (same timestamp = same rerun replay)
+    if _bt_ts and _bt_ts == st.session_state.get('_last_bridge_ts'):
+        pass  # already handled
     else:
-        # ── Feature tag from context menu ──────────────────────────────────────
-        feat_name = _bridge_tag.get('feature', '')
-        feat_val  = _bridge_tag.get('value')
-        fd = _FEAT_BY_NAME.get(feat_name)
-        if fd and doc_id:
-            sk = f"feat_{doc_id}"
-            if f"{sk}_pending" not in st.session_state:
-                st.session_state[f"{sk}_pending"] = {}
-            st.session_state[f"{sk}_pending"][fd[1]] = feat_val
-            st.session_state[f"{sk}_auto_expand"] = True
-            st.session_state['_bridge_tag_processed'] = True
+        _bt_type = _bridge_tag.get('type', '')
+        doc_id   = _bridge_tag.get('docId', '')
+
+        if _bt_type == 'edit':
+            # ── Inline find-and-replace from context menu ──────────────────────
+            find_text = _bridge_tag.get('find', '').strip()
+            repl_text = _bridge_tag.get('replace', '').strip()
+            if find_text and repl_text and doc_id:
+                try:
+                    n = find_replace_in_gdoc(doc_id, find_text, repl_text)
+                    st.session_state['_ctx_edit_result'] = (find_text, repl_text, n, None)
+                except Exception as e:
+                    st.session_state['_ctx_edit_result'] = (find_text, repl_text, 0, str(e))
+            st.session_state['_last_bridge_ts'] = _bt_ts
+
+        else:
+            # ── Feature tag from context menu ──────────────────────────────────
+            feat_name = _bridge_tag.get('feature', '')
+            feat_val  = _bridge_tag.get('value')
+            fd = _FEAT_BY_NAME.get(feat_name)
+            if fd and doc_id:
+                sk = f"feat_{doc_id}"
+                if f"{sk}_pending" not in st.session_state:
+                    st.session_state[f"{sk}_pending"] = {}
+                st.session_state[f"{sk}_pending"][fd[1]] = feat_val
+                st.session_state[f"{sk}_auto_expand"] = True
+                st.session_state['_last_bridge_ts'] = _bt_ts
 
 # ── Show result of context-menu find-replace (survives the rerun) ─────────────
 if '_ctx_edit_result' in st.session_state:
