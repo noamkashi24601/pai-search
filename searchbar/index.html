@@ -1,0 +1,201 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;600&display=swap" rel="stylesheet">
+<style>
+* { box-sizing: border-box; margin: 0; padding: 0; }
+body { font-family: 'IBM Plex Mono', monospace; background: transparent; overflow: hidden; }
+
+#container { display: flex; flex-direction: column; gap: 8px; }
+
+#input-row { display: flex; gap: 7px; align-items: center; }
+
+#search-input {
+  flex: 1; border: 2px solid #b8deff; border-radius: 12px;
+  padding: 10px 16px;
+  font-family: 'IBM Plex Mono', monospace; font-size: 17px;
+  background: #f0f8ff; color: #1a2b3c; outline: none;
+  transition: border-color .2s, box-shadow .2s;
+}
+#search-input:focus {
+  border-color: #2075c7;
+  box-shadow: 0 0 0 3px rgba(32,117,199,.12);
+  background: white;
+}
+#search-input::placeholder { color: #a0b4c8; font-size: 14px; }
+
+.icon-btn {
+  background: #daeeff; border: 1.5px solid #60aee8; border-radius: 10px;
+  padding: 8px 11px; cursor: pointer; font-size: 15px; color: #0d3f75;
+  transition: background .15s; white-space: nowrap; flex-shrink: 0;
+}
+.icon-btn:hover { background: #b8deff; }
+.icon-btn.active { background: #2075c7; color: white; border-color: #2075c7; }
+
+#search-btn {
+  background: #2075c7; border: none; border-radius: 10px;
+  padding: 9px 18px; cursor: pointer; font-size: 14px;
+  font-family: 'IBM Plex Mono', monospace; color: white; font-weight: 600;
+  transition: background .15s; flex-shrink: 0;
+}
+#search-btn:hover { background: #0d3f75; }
+
+/* ── Keyboard panel ── */
+#keyboard {
+  display: none; background: #f0f8ff; border: 1.5px solid #b8deff;
+  border-radius: 12px; padding: 10px 12px; gap: 8px;
+  flex-direction: column;
+}
+#keyboard.open { display: flex; }
+
+.kb-section-label {
+  font-size: 10px; color: #60aee8; letter-spacing: .07em;
+  text-transform: uppercase; margin-bottom: 3px;
+}
+.kb-row { display: flex; flex-wrap: wrap; gap: 4px; margin-bottom: 6px; }
+.kb-row:last-child { margin-bottom: 0; }
+
+.kc {
+  background: white; border: 1.5px solid #b8deff; border-radius: 7px;
+  padding: 5px 8px; cursor: pointer;
+  font-family: 'IBM Plex Mono', monospace; font-size: 14px;
+  color: #1a2b3c; min-width: 30px; text-align: center;
+  transition: background .1s;
+}
+.kc:hover { background: #daeeff; border-color: #60aee8; }
+.kc.wildcard { background: #fff8e0; border-color: #ffe082; color: #7a5f00; }
+.kc.wildcard:hover { background: #ffecb3; }
+.kc.anchor { background: #e3f2fd; border-color: #90caf9; color: #1565c0; font-weight: 700; }
+.kc.anchor:hover { background: #bbdefb; }
+.kc.special { background: #f3e5f5; border-color: #ce93d8; color: #6a1b9a; }
+.kc.special:hover { background: #e1bee7; }
+</style>
+</head>
+<body>
+<div id="container">
+  <div id="input-row">
+    <input id="search-input" type="text" autocomplete="off" spellcheck="false"
+           placeholder="Type a pattern…   e.g.  aCC  ·  ^VCC  ·  ḥVCC#">
+    <button class="icon-btn" id="kb-btn" title="Toggle PAI character keyboard">⌨ PAI</button>
+    <button id="search-btn">Search</button>
+  </div>
+
+  <div id="keyboard">
+    <div>
+      <div class="kb-section-label">Wildcards &amp; word anchors</div>
+      <div class="kb-row" id="row-wildcards"></div>
+    </div>
+    <div>
+      <div class="kb-section-label">Special consonants</div>
+      <div class="kb-row" id="row-special"></div>
+    </div>
+    <div>
+      <div class="kb-section-label">Plain consonants</div>
+      <div class="kb-row" id="row-plain"></div>
+    </div>
+    <div>
+      <div class="kb-section-label">Vowels &amp; diphthongs</div>
+      <div class="kb-row" id="row-vowels"></div>
+    </div>
+  </div>
+</div>
+
+<script>
+function postST(msg) {
+  window.parent.postMessage(Object.assign({isStreamlitMessage: true}, msg), '*');
+}
+postST({type: 'streamlit:componentReady', apiVersion: 1});
+
+var inp     = document.getElementById('search-input');
+var kbBtn   = document.getElementById('kb-btn');
+var kb      = document.getElementById('keyboard');
+var srchBtn = document.getElementById('search-btn');
+
+// ── Character groups ──────────────────────────────────────────────────────────
+var WILDCARDS = [
+  {ch:'^', cls:'anchor',   title:'start of word — word must begin here'},
+  {ch:'C', cls:'wildcard', title:'any consonant'},
+  {ch:'V', cls:'wildcard', title:'any vowel'},
+  {ch:'D', cls:'wildcard', title:'any diphthong (aw / ay)'},
+  {ch:'$', cls:'wildcard', title:'any single character'},
+  {ch:'#', cls:'anchor',   title:'end of word — word must end here'},
+];
+var SPECIAL = ['ʾ','ʿ','ḥ','ḍ','ṭ','ṯ','ġ','ğ','ž','č','š','ṣ'];
+var PLAIN   = ['b','d','f','g','h','k','l','m','n','q','r','s','t','w','x','y','z'];
+var VOWELS  = ['a','e','i','u','o','ə','ā','ē','ī','ō','ū'];
+
+function buildRow(rowId, items, defaultCls) {
+  var row = document.getElementById(rowId);
+  items.forEach(function(item) {
+    var ch  = typeof item === 'string' ? item : item.ch;
+    var cls = typeof item === 'object' && item.cls ? item.cls : defaultCls;
+    var ttl = typeof item === 'object' && item.title ? item.title : ch;
+    var btn = document.createElement('button');
+    btn.className = 'kc ' + cls;
+    btn.textContent = ch;
+    btn.title = ttl;
+    btn.addEventListener('click', function(e) {
+      e.preventDefault();
+      insertChar(ch);
+    });
+    row.appendChild(btn);
+  });
+}
+
+buildRow('row-wildcards', WILDCARDS, '');
+buildRow('row-special',   SPECIAL,   'special');
+buildRow('row-plain',     PLAIN,     '');
+buildRow('row-vowels',    VOWELS,    '');
+
+// ── Character insertion ───────────────────────────────────────────────────────
+function insertChar(ch) {
+  var s = inp.selectionStart, e = inp.selectionEnd;
+  inp.value = inp.value.slice(0, s) + ch + inp.value.slice(e);
+  inp.selectionStart = inp.selectionEnd = s + ch.length;
+  inp.focus();
+}
+
+// ── Keyboard toggle ───────────────────────────────────────────────────────────
+kbBtn.addEventListener('click', function() {
+  var open = kb.classList.toggle('open');
+  kbBtn.classList.toggle('active', open);
+  setTimeout(sendHeight, 20);
+});
+
+// ── Height reporting ──────────────────────────────────────────────────────────
+function sendHeight() {
+  postST({type: 'streamlit:setFrameHeight',
+          height: document.getElementById('container').getBoundingClientRect().height + 6});
+}
+sendHeight();
+window.addEventListener('resize', sendHeight);
+
+// ── Search ────────────────────────────────────────────────────────────────────
+function doSearch() {
+  var q = inp.value.trim();
+  if (!q) return;
+  postST({
+    type: 'streamlit:setComponentValue',
+    value: {query: q, timestamp: Date.now()},
+    dataType: 'json'
+  });
+}
+
+srchBtn.addEventListener('click', doSearch);
+inp.addEventListener('keydown', function(e) {
+  if (e.key === 'Enter') { e.preventDefault(); doSearch(); }
+});
+
+// ── Pre-fill from Streamlit args ──────────────────────────────────────────────
+window.addEventListener('message', function(e) {
+  if (!e.data || e.data.type !== 'streamlit:render') return;
+  var args = (e.data.args || {});
+  if (args.initial_value != null && args.initial_value !== inp.value) {
+    inp.value = args.initial_value;
+  }
+  setTimeout(sendHeight, 20);
+});
+</script>
+</body>
+</html>

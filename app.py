@@ -23,6 +23,12 @@ _TAG_BRIDGE = components.declare_component(
     path=str(Path(__file__).parent / "tagbridge"),
 )
 
+# ── Declare search-bar component (input + PAI keyboard) ───────────────────────
+_SEARCH_BAR = components.declare_component(
+    "pai_search_bar",
+    path=str(Path(__file__).parent / "searchbar"),
+)
+
 st.set_page_config(page_title="PAI Corpus Search", layout="wide", page_icon="◌")
 
 # ── CSS ─────────────────────────────────────────────────────────────────────────
@@ -200,14 +206,31 @@ _D = _alts(DIPHTHONGS)
 
 
 def pattern_to_regex(pattern: str) -> re.Pattern:
+    """
+    Convert a PAI pattern string to a compiled regex.
+    Wildcards: C=consonant, V=vowel, D=diphthong, $=any char
+    Word anchors: ^ at start = word must begin here
+                  # at end   = word must end here
+    """
+    pattern = unicodedata.normalize('NFC', pattern)
+    anchor_start = pattern.startswith('^')
+    anchor_end   = pattern.endswith('#')
+    core = pattern
+    if anchor_start: core = core[1:]
+    if anchor_end:   core = core[:-1]
+
     parts = []
-    for ch in unicodedata.normalize('NFC', pattern):
+    for ch in core:
         if   ch == 'C': parts.append(_C)
         elif ch == 'V': parts.append(_V)
         elif ch == 'D': parts.append(_D)
         elif ch == '$': parts.append('.')
         else:           parts.append(re.escape(ch))
-    return re.compile(''.join(parts))
+
+    rx_str = ''.join(parts)
+    if anchor_start: rx_str = '^' + rx_str
+    if anchor_end:   rx_str = rx_str + '$'
+    return re.compile(rx_str, re.UNICODE)
 
 
 def tokenize(text: str) -> list:
@@ -397,6 +420,23 @@ mark.pai-hl {{ outline:2px solid #2075c7; border-radius:2px; background:#7ee8a2;
 #ctx-edit-note {{
   font-size:10px; color:#666; margin-top:5px;
 }}
+/* ── edit-section PAI keyboard ── */
+#ctx-kb-toggle {{
+  background:none; border:1px solid #444; border-radius:5px;
+  color:#aaa; font-size:11px; padding:2px 6px; cursor:pointer; margin-top:5px;
+}}
+#ctx-kb-toggle:hover {{ color:#f2f2f7; border-color:#666; }}
+#ctx-kb-panel {{
+  display:none; margin-top:6px; flex-wrap:wrap; gap:3px;
+}}
+#ctx-kb-panel.open {{ display:flex; }}
+.ctx-kc {{
+  background:#2c2c2e; border:1px solid #555; border-radius:5px;
+  color:#f2f2f7; font-family:'IBM Plex Mono',monospace; font-size:12px;
+  padding:3px 6px; cursor:pointer; min-width:24px; text-align:center;
+}}
+.ctx-kc:hover {{ background:#3a3a3c; }}
+.ctx-kc.ctx-anchor {{ background:#1a3a5c; border-color:#60aee8; color:#90caf9; font-weight:700; }}
 </style>
 <div id="pai-ctx-menu">
   <div id="pai-ctx-header">TAG FEATURE</div>
@@ -408,6 +448,8 @@ mark.pai-hl {{ outline:2px solid #2075c7; border-radius:2px; background:#7ee8a2;
       <button id="ctx-edit-btn" title="Apply">↵</button>
     </div>
     <div id="ctx-edit-note">Replaces all occurrences in the document</div>
+    <button id="ctx-kb-toggle">⌨ PAI chars</button>
+    <div id="ctx-kb-panel"></div>
   </div>
   <div id="pai-ctx-scroll"></div>
 </div>
@@ -429,6 +471,29 @@ mark.pai-hl {{ outline:2px solid #2075c7; border-radius:2px; background:#7ee8a2;
   // ── Edit section: stop clicks bubbling to the close-menu handler ────────
   editSect.addEventListener('click',   function(e) {{ e.stopPropagation(); }});
   editSect.addEventListener('mousedown', function(e) {{ e.stopPropagation(); }});
+
+  // ── Context-menu PAI keyboard ─────────────────────────────────────────────
+  var ctxKbToggle = document.getElementById('ctx-kb-toggle');
+  var ctxKbPanel  = document.getElementById('ctx-kb-panel');
+  var CTX_CHARS   = ['ʾ','ʿ','ḥ','ḍ','ṭ','ṯ','ġ','ğ','ž','č','š','ṣ',
+                     'ā','ē','ī','ō','ū','ə','a','e','i','o','u'];
+  CTX_CHARS.forEach(function(ch) {{
+    var b = document.createElement('button');
+    b.className = 'ctx-kc';
+    b.textContent = ch;
+    b.addEventListener('click', function(e) {{
+      e.stopPropagation();
+      var s = editInput.selectionStart, en = editInput.selectionEnd;
+      editInput.value = editInput.value.slice(0,s) + ch + editInput.value.slice(en);
+      editInput.selectionStart = editInput.selectionEnd = s + ch.length;
+      editInput.focus();
+    }});
+    ctxKbPanel.appendChild(b);
+  }});
+  ctxKbToggle.addEventListener('click', function(e) {{
+    e.stopPropagation();
+    ctxKbPanel.classList.toggle('open');
+  }});
 
   function applyEdit() {{
     const repl = editInput.value;
@@ -1297,24 +1362,25 @@ with mid:
           <span class="legend-pill"><b>V</b> = vowel</span>
           <span class="legend-pill"><b>D</b> = diphthong (aw/ay)</span>
           <span class="legend-pill"><b>$</b> = any character</span>
+          <span class="legend-pill" style="background:#e3f2fd;border-color:#90caf9;color:#1565c0">
+            <b>^</b> = start of word&nbsp;&nbsp;<b>#</b> = end of word
+          </span>
           <span class="legend-pill" style="background:#fff8e0;border-color:#ffe082">
-            e.g.&nbsp;<b>aCC</b>&nbsp;·&nbsp;<b>f$m</b>&nbsp;·&nbsp;<b>VCC</b>&nbsp;·&nbsp;<b>ḥVCC</b>
+            e.g.&nbsp;<b>^aCC</b>&nbsp;·&nbsp;<b>f$m</b>&nbsp;·&nbsp;<b>VCC#</b>&nbsp;·&nbsp;<b>^ḥVCC#</b>
           </span>
         </div>
         """, unsafe_allow_html=True)
-        pattern_input = st.text_input(
-            "Pattern",
-            placeholder="Type a pattern…   e.g.  aCC  or  f$m  or  VCCa",
-            label_visibility="collapsed",
-            key="pattern"
-        )
-    else:
-        pattern_input = st.text_input(
-            "Document name or ID",
-            placeholder="Type document name or ID…   e.g.  Xḏ̣.2M.R1(t)  or  Galilee",
-            label_visibility="collapsed",
-            key="pattern"
-        )
+
+    # ── Search bar component (handles typing + PAI keyboard) ─────────────────
+    _sb_result = _SEARCH_BAR(
+        key="searchbar",
+        initial_value=st.session_state.get('_last_pattern', ''),
+    )
+    search_clicked  = _sb_result is not None and bool(_sb_result.get('query'))
+    pattern_input   = _sb_result['query'].strip() if search_clicked else \
+                      st.session_state.get('_last_pattern', '')
+    if search_clicked:
+        st.session_state['_last_pattern'] = pattern_input
 
     with st.expander("⚙️  Advanced options"):
         if search_mode == 'transcription':
@@ -1343,14 +1409,10 @@ with mid:
             position    = 'anywhere'
             name_filter = ''
 
-
-    col_s, col_c = st.columns([5, 1])
-    with col_s:
-        search_clicked = st.button("Search corpus", type="primary", use_container_width=True)
-    with col_c:
-        if st.button("↺", help="Clear cache and reload", use_container_width=True):
-            st.cache_data.clear()
-            st.rerun()
+    # Clear-cache utility button (small, tucked below advanced options)
+    if st.button("↺  Clear cache & reload", help="Force reload corpus from Google Sheets"):
+        st.cache_data.clear()
+        st.rerun()
 
 # ── Load corpus index once ────────────────────────────────────────────────────
 with st.spinner("Loading corpus index from Google Sheets…"):
