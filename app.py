@@ -125,6 +125,16 @@ div[data-testid="stButton"] button[kind="primary"] {
 div[data-testid="stButton"] button[kind="primary"]:hover {
   background: var(--sky-800) !important;
 }
+/* ── Secondary / Clear button ── */
+div[data-testid="stButton"] button[kind="secondary"] {
+  background: #fee2e2 !important; color: #7f1d1d !important;
+  border: 1.5px solid #fca5a5 !important; border-radius: 12px !important;
+  font-family: 'IBM Plex Mono', monospace !important;
+  font-size: 0.9rem !important; padding: 0.6rem 1.5rem !important;
+}
+div[data-testid="stButton"] button[kind="secondary"]:hover {
+  background: #fecaca !important; border-color: #f87171 !important;
+}
 
 /* ── Result expanders ── */
 div[data-testid="stExpander"].result-expander > details {
@@ -1284,6 +1294,10 @@ def _render_submit_bar(doc_id: str, doc_name: str, sheet_rows: list):
         if st.button("✕ Clear", key=f"{sk}_clear_bar", use_container_width=True):
             st.session_state[f"{sk}_pending"] = {}
             st.session_state[f"{sk}_doc_only"] = {}
+            for _dn in DOC_ONLY_FEATURES:
+                _dk = f"{sk}_donly_{_dn}"
+                if _dk in st.session_state:
+                    st.session_state[_dk] = False
             st.rerun()
 
     if st.session_state.get(f"{sk}_confirm"):
