@@ -1597,11 +1597,12 @@ if results:
         status = r.get('status', '')
         status_str = f"  {STATUS_EMOJI.get(status, '⚪')} {status}" if status else ''
 
-        # Word chips as plain text (up to 8, then "+N more")
+        # Word chips as plain text between pipes (up to 8, then "+N more")
         if preview_words:
-            words_str = '   ' + '  ·  '.join(preview_words[:8])
+            words_str = '   |  ' + '  ·  '.join(preview_words[:8])
             if len(preview_words) > 8:
                 words_str += f'  +{len(preview_words)-8}'
+            words_str += '  |'
         else:
             words_str = ''
 
