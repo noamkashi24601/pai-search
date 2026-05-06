@@ -204,7 +204,7 @@ CONSONANTS: set = {
 }
 VOWELS: set = { 'a','e','i','u','o','ā','ō','ū','ī','ē','ɑ̄','ə' }
 DIPHTHONGS: list = ['aw','ay','ōw','ēy']
-WORD_DELIM = re.compile(r'[\s,.:;!?()\[\]{}"\'—–\-#]+|ʿ\u203Fʿ')
+WORD_DELIM = re.compile(r'[\s,.:;!?()\[\]{}"\'—–#]+|ʿ\u203Fʿ')
 
 
 def _alts(items) -> str:
@@ -307,9 +307,19 @@ def _highlight_text_nodes(fragment: str, rx: re.Pattern) -> str:
             for m in rx.finditer(text):
                 # Non-matched portion: re-escape HTML special chars
                 result.append(html_lib.escape(text[last:m.start()]))
-                # Matched portion: wrap in <mark>
+                # Find the full whitespace-delimited word containing this match,
+                # so each <mark> carries a data-word attribute for chip navigation.
+                w_start = m.start()
+                while w_start > 0 and not text[w_start - 1].isspace():
+                    w_start -= 1
+                w_end = m.end()
+                while w_end < len(text) and not text[w_end].isspace():
+                    w_end += 1
+                containing_word = html_lib.escape(text[w_start:w_end])
+                # Matched portion: wrap in <mark> with data-word
                 result.append(
-                    f'<mark style="{_MARK_STYLE}">{html_lib.escape(m.group())}</mark>'
+                    f'<mark style="{_MARK_STYLE}" data-word="{containing_word}">'
+                    f'{html_lib.escape(m.group())}</mark>'
                 )
                 last = m.end()
             result.append(html_lib.escape(text[last:]))
@@ -658,34 +668,54 @@ mark.pai-hl {{ outline:2px solid #2075c7; border-radius:2px; background:#7ee8a2;
   strip.id = 'pai-chip-strip';
   var html = '<span class="pai-cs-label">jump to match&nbsp;↓&nbsp;</span>';
   NAV_WORDS.forEach(function(w) {{
-    html += '<button class="pai-nav-chip" onclick="paiNavMark()">' + w + '</button>';
+    html += '<button class="pai-nav-chip" data-navword="' + w.replace(/"/g,'&quot;') + '" onclick="paiNavWord(this)">' + w + '</button>';
   }});
   html += '<span id="pai-mark-pos"></span>';
   strip.innerHTML = html;
 
   function insertStrip() {{
     if (document.body) document.body.insertAdjacentElement('afterbegin', strip);
-    _initMarks();
   }}
   if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', insertStrip);
   else insertStrip();
 }})();
 
-var _paiMarks = [], _paiIdx = 0, _paiLastHL = null;
-function _initMarks() {{
-  _paiMarks = Array.from(document.querySelectorAll('mark'));
-}}
-function paiNavMark() {{
-  if (_paiMarks.length === 0) _initMarks();
-  if (_paiMarks.length === 0) return;
+var _paiWordIdx = {{}}, _paiLastHL = null, _paiLastBtn = null;
+function paiNavWord(btn) {{
+  var word = btn.getAttribute('data-navword');
+  // Collect marks whose data-word matches this chip's word
+  var allMarks = Array.from(document.querySelectorAll('mark[data-word]'));
+  var wordMarks = allMarks.filter(function(m) {{
+    return m.getAttribute('data-word') === word;
+  }});
+  // Fallback: marks whose data-word contains the chip word as substring
+  if (wordMarks.length === 0) {{
+    wordMarks = allMarks.filter(function(m) {{
+      return m.getAttribute('data-word').indexOf(word) >= 0;
+    }});
+  }}
+  if (wordMarks.length === 0) return;
+
+  // Reset index when switching to a different word
+  if (_paiLastBtn !== btn) {{
+    _paiWordIdx[word] = 0;
+    _paiLastBtn = btn;
+  }}
+  if (_paiWordIdx[word] === undefined) _paiWordIdx[word] = 0;
+
+  // Remove previous highlight
   if (_paiLastHL) _paiLastHL.classList.remove('pai-hl');
-  var m = _paiMarks[_paiIdx];
+
+  var m = wordMarks[_paiWordIdx[word]];
   m.classList.add('pai-hl');
   m.scrollIntoView({{behavior:'smooth', block:'center'}});
   _paiLastHL = m;
-  _paiIdx = (_paiIdx + 1) % _paiMarks.length;
+
+  var cur = _paiWordIdx[word] + 1;
+  _paiWordIdx[word] = cur % wordMarks.length;
+
   var pos = document.getElementById('pai-mark-pos');
-  if (pos) pos.textContent = _paiIdx + '/' + _paiMarks.length;
+  if (pos) pos.textContent = cur + '/' + wordMarks.length;
 }}
 </script>
 """
