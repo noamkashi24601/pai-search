@@ -48,6 +48,15 @@ st.markdown("""
 
 html, body, .stApp { background: var(--sky-50) !important; }
 
+/* ── Radio button labels ── */
+div[data-testid="stRadio"] label p,
+div[data-testid="stRadio"] label span {
+  color: var(--ink) !important;
+  font-family: 'IBM Plex Mono', monospace !important;
+  font-size: 0.9rem !important;
+  font-weight: 500 !important;
+}
+
 /* ── Header ── */
 .pai-header { text-align: center; padding: 2.5rem 0 1rem; }
 .pai-header .title {
