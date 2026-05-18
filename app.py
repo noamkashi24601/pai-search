@@ -1650,17 +1650,12 @@ with mid:
     if st.button("↺  Clear cache & reload", help="Force reload corpus from Google Sheets"):
         st.cache_data.clear()
         st.rerun()
-    if st.button("🔍 Debug: show last corpus entries", help="Show last 5 rows loaded from sheet"):
-        st.session_state['_show_debug'] = not st.session_state.get('_show_debug', False)
-        st.rerun()
 
 # ── Load corpus index once ────────────────────────────────────────────────────
 with st.spinner("Loading corpus index from Google Sheets…"):
     try:
         corpus = load_corpus_index()
         st.caption(f"📚 Corpus: {len(corpus)} transcribed documents loaded from Google Sheets")
-        if st.session_state.get('_show_debug'):
-            st.write("**Last 5 corpus entries:**", corpus[-5:])
     except Exception as e:
         st.error(f"Could not load corpus index: {e}")
         corpus = []
