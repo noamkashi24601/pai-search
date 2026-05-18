@@ -924,9 +924,22 @@ def get_services():
 
 
 def _extract_doc_id(url: str) -> str | None:
-    """Extract Google Doc ID from a docs.google.com URL."""
+    """Extract Google Doc ID from various Google URL formats."""
+    if not url:
+        return None
+    # Standard: docs.google.com/document/d/ID
     m = re.search(r'/document/d/([a-zA-Z0-9_-]+)', url)
-    return m.group(1) if m else None
+    if m:
+        return m.group(1)
+    # Drive open: drive.google.com/open?id=ID
+    m = re.search(r'[?&]id=([a-zA-Z0-9_-]+)', url)
+    if m:
+        return m.group(1)
+    # Drive file: drive.google.com/file/d/ID
+    m = re.search(r'/file/d/([a-zA-Z0-9_-]+)', url)
+    if m:
+        return m.group(1)
+    return None
 
 
 @st.cache_data(ttl=600, show_spinner=False)
@@ -972,8 +985,10 @@ def load_corpus_index() -> list[dict]:
         trans_name = cell_val(COL_TRANS_LINK)
         trans_url  = cell_link(COL_TRANS_LINK)
 
-        # Only include rows that have a real Google Doc transcription link
-        if not trans_url or 'docs.google.com/document' not in trans_url:
+        # Only include rows that have a recognisable Google link
+        if not trans_url or not any(d in trans_url for d in (
+            'docs.google.com/document', 'drive.google.com', 'docs.google.com/file'
+        )):
             continue
 
         doc_id = _extract_doc_id(trans_url)
@@ -1635,12 +1650,17 @@ with mid:
     if st.button("↺  Clear cache & reload", help="Force reload corpus from Google Sheets"):
         st.cache_data.clear()
         st.rerun()
+    if st.button("🔍 Debug: show last corpus entries", help="Show last 5 rows loaded from sheet"):
+        st.session_state['_show_debug'] = not st.session_state.get('_show_debug', False)
+        st.rerun()
 
 # ── Load corpus index once ────────────────────────────────────────────────────
 with st.spinner("Loading corpus index from Google Sheets…"):
     try:
         corpus = load_corpus_index()
         st.caption(f"📚 Corpus: {len(corpus)} transcribed documents loaded from Google Sheets")
+        if st.session_state.get('_show_debug'):
+            st.write("**Last 5 corpus entries:**", corpus[-5:])
     except Exception as e:
         st.error(f"Could not load corpus index: {e}")
         corpus = []
