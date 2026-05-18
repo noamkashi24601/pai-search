@@ -980,8 +980,10 @@ def load_corpus_index() -> list[dict]:
         if not doc_id:
             continue
 
+        rec_name = cell_val(COL_REC_LINK) or ''
         corpus.append({
-            'name':       trans_name or cell_val(COL_REC_LINK) or doc_id,
+            'name':       trans_name or rec_name or doc_id,
+            'rec_name':   rec_name,   # display text of recording link (AN) — searched separately
             'doc_id':     doc_id,
             'village':    cell_val(COL_VILLAGE)   or '',
             'community':  cell_val(COL_COMMUNITY) or '',
@@ -1353,6 +1355,7 @@ def search_by_name(query: str, corpus: list[dict]) -> list[dict]:
     matches = [
         doc for doc in corpus
         if q in doc['name'].lower()
+        or q in doc.get('rec_name', '').lower()
         or q in doc.get('village', '').lower()
         or q in doc.get('community', '').lower()
     ]
