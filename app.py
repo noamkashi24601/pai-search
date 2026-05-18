@@ -924,21 +924,37 @@ def get_services():
 
 
 def _extract_doc_id(url: str) -> str | None:
-    """Extract Google Doc ID from various Google URL formats."""
+    """
+    Extract a Google Doc/Drive file ID from any Google URL format.
+
+    Handled patterns
+    ─────────────────────────────────────────────────────────────────
+    docs.google.com/document/d/ID/…          standard
+    docs.google.com/document/u/0/d/ID/…      user-scoped (Google adds /u/N/)
+    drive.google.com/file/d/ID/…             Drive file link
+    drive.google.com/file/u/0/d/ID/…        Drive file link, user-scoped
+    drive.google.com/open?id=ID              legacy "open" link
+    drive.google.com/uc?id=ID&export=…      direct-download link
+    Any URL with ?id=ID or &id=ID            generic id= parameter
+    ─────────────────────────────────────────────────────────────────
+    NOTE: published docs (/document/d/e/LONGID/pub) are intentionally
+    excluded — they are not editable Docs API targets.
+    """
     if not url:
         return None
-    # Standard: /document/d/ID  OR  /document/u/0/d/ID  (Google sometimes inserts /u/N/)
-    m = re.search(r'/document/(?:u/\d+/)?d/([a-zA-Z0-9_-]+)', url)
+
+    # /document/ and /file/ paths — both accept an optional /u/N/ user segment
+    # The lookahead `(?![a-zA-Z0-9_-]{0,3}/)` prevents matching published-doc
+    # stubs like /d/e/ where the "ID" would just be a single letter.
+    m = re.search(r'/(?:document|file)/(?:u/\d+/)?d/([a-zA-Z0-9_-]{10,})', url)
     if m:
         return m.group(1)
-    # Drive open: drive.google.com/open?id=ID
-    m = re.search(r'[?&]id=([a-zA-Z0-9_-]+)', url)
+
+    # id= query parameter (drive.google.com/open?id=… or /uc?id=…)
+    m = re.search(r'[?&]id=([a-zA-Z0-9_-]{10,})', url)
     if m:
         return m.group(1)
-    # Drive file: drive.google.com/file/d/ID
-    m = re.search(r'/file/d/([a-zA-Z0-9_-]+)', url)
-    if m:
-        return m.group(1)
+
     return None
 
 
