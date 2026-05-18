@@ -1010,6 +1010,95 @@ def load_corpus_index() -> list[dict]:
     return corpus
 
 
+def debug_corpus_load(tail: int = 20) -> dict:
+    """
+    Non-cached version of corpus loading for debugging.
+    Returns:
+      - 'corpus': list of loaded docs (same as load_corpus_index)
+      - 'skipped': list of rows that had a trans_name but were skipped (no valid link/doc_id)
+      - 'total_rows': total sheet rows read (excl. header)
+      - 'tail_raw': raw cell info for the last `tail` rows that had ANY content
+    """
+    _, _, sheets_svc = get_services()
+    result = sheets_svc.spreadsheets().get(
+        spreadsheetId=SPREADSHEET_ID,
+        ranges=['Recordings'],
+        includeGridData=True,
+    ).execute()
+
+    grid = result['sheets'][0]['data'][0]['rowData']
+    corpus   = []
+    skipped  = []
+    tail_raw = []
+
+    for grid_row_idx, row in enumerate(grid[1:], start=2):
+        cells = row.get('values', [])
+        if not cells:
+            continue
+
+        def _cv(idx, _c=cells):
+            if idx >= len(_c): return None
+            return _c[idx].get('formattedValue')
+
+        def _cl(idx, _c=cells):
+            if idx >= len(_c): return None
+            cell = _c[idx]
+            if cell.get('hyperlink'):
+                return ('hyperlink', cell['hyperlink'])
+            val = (
+                (cell.get('userEnteredValue') or {}).get('stringValue')
+                or cell.get('formattedValue') or ''
+            )
+            if 'docs.google.com' in val or val.startswith('https://'):
+                return ('plaintext', val.strip())
+            return ('none', None)
+
+        trans_name = _cv(COL_TRANS_LINK)
+        link_src, trans_url = _cl(COL_TRANS_LINK)
+        rec_name   = _cv(COL_REC_LINK) or ''
+        row_info   = {
+            'sheet_row':  grid_row_idx,
+            'trans_name': trans_name,
+            'rec_name':   rec_name,
+            'link_src':   link_src,
+            'trans_url':  trans_url,
+        }
+
+        # Collect tail raw for last N content rows
+        if trans_name or rec_name:
+            tail_raw.append(row_info)
+            if len(tail_raw) > tail:
+                tail_raw.pop(0)
+
+        if not trans_url or not any(d in trans_url for d in (
+            'docs.google.com/document', 'drive.google.com', 'docs.google.com/file'
+        )):
+            if trans_name:
+                row_info['skip_reason'] = 'no valid link'
+                skipped.append(row_info)
+            continue
+
+        doc_id = _extract_doc_id(trans_url)
+        if not doc_id:
+            row_info['skip_reason'] = 'doc_id extraction failed'
+            skipped.append(row_info)
+            continue
+
+        corpus.append({
+            'name':      trans_name or rec_name or doc_id,
+            'rec_name':  rec_name,
+            'doc_id':    doc_id,
+            'sheet_row': grid_row_idx,
+        })
+
+    return {
+        'corpus':     corpus,
+        'skipped':    skipped,
+        'total_rows': len(grid) - 1,
+        'tail_raw':   tail_raw,
+    }
+
+
 @st.cache_data(ttl=3600, show_spinner=False)
 def get_doc_content(doc_id: str) -> dict:
     """
@@ -1540,6 +1629,70 @@ def _render_submit_bar(doc_id: str, doc_name: str, sheet_rows: list):
 
 
 # ════════════════════════════════════════════════════════════════════════════════
+#  SIDEBAR – corpus stats & debug
+# ════════════════════════════════════════════════════════════════════════════════
+
+with st.sidebar:
+    st.markdown("### 📚 Corpus")
+    # Lazy-load so sidebar doesn't block first render
+    _corp_tmp = st.session_state.get('_corpus_for_sidebar')
+    if _corp_tmp is not None:
+        st.markdown(f"**{len(_corp_tmp)}** documents loaded")
+
+    if st.button("🔄 Reload corpus cache", key="sidebar_reload"):
+        load_corpus_index.clear()
+        get_doc_content.clear()
+        st.session_state.pop('_corpus_for_sidebar', None)
+        st.rerun()
+
+    with st.expander("🔧 Debug: inspect corpus row"):
+        _dbg_q = st.text_input("Row name or doc ID to inspect", key="dbg_row_q",
+                                placeholder="e.g. BĠr.1F.R27")
+        if st.button("Run debug scan", key="dbg_run"):
+            with st.spinner("Reading raw sheet data…"):
+                _dbg = debug_corpus_load(tail=30)
+            st.markdown(f"**Sheet rows read:** {_dbg['total_rows']}")
+            st.markdown(f"**Corpus entries loaded:** {len(_dbg['corpus'])}")
+            st.markdown(f"**Skipped rows (had name, no valid link):** {len(_dbg['skipped'])}")
+
+            _q = _dbg_q.strip().lower()
+            if _q:
+                # Search loaded corpus
+                _hits = [d for d in _dbg['corpus']
+                         if _q in d.get('name','').lower()
+                         or _q in d.get('rec_name','').lower()
+                         or _q in d.get('doc_id','').lower()]
+                st.markdown(f"**Corpus matches for '{_dbg_q}':** {len(_hits)}")
+                for _h in _hits:
+                    st.code(json.dumps(_h, ensure_ascii=False, indent=2))
+
+                # Search skipped rows
+                _skip_hits = [d for d in _dbg['skipped']
+                              if _q in str(d.get('trans_name','')).lower()
+                              or _q in str(d.get('rec_name','')).lower()]
+                st.markdown(f"**Skipped matches:** {len(_skip_hits)}")
+                for _h in _skip_hits:
+                    st.code(json.dumps(_h, ensure_ascii=False, indent=2))
+
+                # Search tail raw rows
+                _tail_hits = [d for d in _dbg['tail_raw']
+                              if _q in str(d.get('trans_name','')).lower()
+                              or _q in str(d.get('rec_name','')).lower()]
+                st.markdown(f"**Tail raw rows matching:** {len(_tail_hits)}")
+                for _h in _tail_hits:
+                    st.code(json.dumps(_h, ensure_ascii=False, indent=2))
+
+            else:
+                st.markdown("**Last 10 raw rows with content:**")
+                for _row in _dbg['tail_raw'][-10:]:
+                    st.code(json.dumps(_row, ensure_ascii=False))
+                if _dbg['skipped']:
+                    st.markdown("**Skipped rows:**")
+                    for _row in _dbg['skipped'][-5:]:
+                        st.code(json.dumps(_row, ensure_ascii=False))
+
+
+# ════════════════════════════════════════════════════════════════════════════════
 #  UI
 # ════════════════════════════════════════════════════════════════════════════════
 
@@ -1655,6 +1808,7 @@ with mid:
 with st.spinner("Loading corpus index from Google Sheets…"):
     try:
         corpus = load_corpus_index()
+        st.session_state['_corpus_for_sidebar'] = corpus
         st.caption(f"📚 Corpus: {len(corpus)} transcribed documents loaded from Google Sheets")
     except Exception as e:
         st.error(f"Could not load corpus index: {e}")
